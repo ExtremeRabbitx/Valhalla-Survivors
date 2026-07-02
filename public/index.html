@@ -28,6 +28,11 @@
   </div>
 
   <p id="lobbyMsg" class="msg"></p>
+
+  <div id="leaderboardBox">
+    <h3 data-i18n="leaderboardTitle">อันดับผู้รอดชีวิต</h3>
+    <ol id="leaderboardList"></ol>
+  </div>
 </div>
 
 <div id="waitingRoom" class="screen hidden">
@@ -44,6 +49,15 @@
     <label><input type="radio" name="difficulty" value="normal" checked /> <span data-i18n="diffNormal">ปกติ</span></label>
     <label><input type="radio" name="difficulty" value="hard" /> <span data-i18n="diffHard">ยาก</span></label>
   </div>
+
+  <div class="difficulty-row" id="weaponRow">
+    <span data-i18n="weaponLabel">อาวุธ:</span>
+    <label><input type="radio" name="weapon" value="hammer" checked /> <span data-i18n="weaponHammer">🔨 ค้อน</span></label>
+    <label><input type="radio" name="weapon" value="axe" /> <span data-i18n="weaponAxe">🪓 ขวานคู่</span></label>
+    <label><input type="radio" name="weapon" value="sword" /> <span data-i18n="weaponSword">🗡️ ดาบ</span></label>
+  </div>
+
+  <div id="waitingPlayerList"></div>
 
   <p id="playerCount"></p>
   <button id="startBtn" data-i18n="startGame">เริ่มเกม ⚔️</button>
@@ -63,6 +77,7 @@
   <div id="touchJoystick" class="hidden">
     <div id="joystickBase"><div id="joystickKnob"></div></div>
   </div>
+  <div id="achievementToast" class="hidden"></div>
   <div id="gameOverOverlay" class="hidden">
     <h2 data-i18n="gameOverTitle">เกมจบแล้ว</h2>
     <p id="gameOverStats"></p>

@@ -17,6 +17,9 @@ const upgradeOverlay = document.getElementById('upgradeOverlay');
 const upgradeChoices = document.getElementById('upgradeChoices');
 const gameOverOverlay = document.getElementById('gameOverOverlay');
 const gameOverStats = document.getElementById('gameOverStats');
+const leaderboardList = document.getElementById('leaderboardList');
+const waitingPlayerList = document.getElementById('waitingPlayerList');
+const achievementToast = document.getElementById('achievementToast');
 
 let myId = null;
 let latestState = null;
@@ -35,7 +38,12 @@ const SPRITES = {
   wolf: loadSprite('/assets/enemy-wolf.png'),
   skeleton: loadSprite('/assets/enemy-skeleton.png'),
   draugr: loadSprite('/assets/enemy-elite.png'),
-  weapon: loadSprite('/assets/weapon-hammer.png'),
+  caster: loadSprite('/assets/enemy-caster.png'),
+  exploder: loadSprite('/assets/enemy-exploder.png'),
+  worldboss: loadSprite('/assets/enemy-worldboss.png'),
+  weapon_hammer: loadSprite('/assets/weapon-hammer.png'),
+  weapon_axe: loadSprite('/assets/weapon-axe.png'),
+  weapon_sword: loadSprite('/assets/weapon-sword.png'),
   gem: loadSprite('/assets/xp-gem.png'),
 };
 const TILESET = loadSprite('/assets/tileset.png');
@@ -62,9 +70,9 @@ function renderMinimap() {
   minimapCtx.fill();
 
   for (const e of latestState.enemies) {
-    minimapCtx.fillStyle = e.elite ? '#ff4040' : '#e06060';
+    minimapCtx.fillStyle = e.worldBoss ? '#c060e0' : (e.elite ? '#ff4040' : '#e06060');
     minimapCtx.beginPath();
-    minimapCtx.arc(e.x * scale, e.y * scale, e.elite ? 3 : 1.5, 0, Math.PI * 2);
+    minimapCtx.arc(e.x * scale, e.y * scale, e.worldBoss ? 5 : (e.elite ? 3 : 1.5), 0, Math.PI * 2);
     minimapCtx.fill();
   }
   for (const p of latestState.players) {
@@ -134,6 +142,17 @@ const TRANSLATIONS = {
     survived: (t) => `รอดชีวิต ${t}`,
     levelKills: (name, lvl, kills) => `${name}: เลเวล ${lvl}, ฆ่า ${kills} ตัว`,
     you: ' (คุณ)',
+    leaderboardTitle: 'อันดับผู้รอดชีวิต',
+    weaponLabel: 'อาวุธ:',
+    weaponHammer: '🔨 ค้อน',
+    weaponAxe: '🪓 ขวานคู่',
+    weaponSword: '🗡️ ดาบ',
+    leaderboardEntry: (i, name, time, lvl) => `${i}. ${name} — ${time} (Lv.${lvl})`,
+    noScores: 'ยังไม่มีสถิติ เล่นให้จบสักตาก่อน!',
+    achSurvive5: '🏅 รอดชีวิตครบ 5 นาที!',
+    achLevel10: '🏅 ถึงเลเวล 10!',
+    achBoss: '🏅 ปราบบอส Fenrir/Jörmungandr/Surtr/Hel สำเร็จ!',
+    achKills50: '🏅 กำจัดศัตรูครบ 50 ตัว!',
   },
   en: {
     subtitle: 'Survive the draugr horde as long as you can. Team up with friends!',
@@ -160,6 +179,17 @@ const TRANSLATIONS = {
     survived: (t) => `Survived ${t}`,
     levelKills: (name, lvl, kills) => `${name}: Level ${lvl}, ${kills} kills`,
     you: ' (you)',
+    leaderboardTitle: 'Top Survivors',
+    weaponLabel: 'Weapon:',
+    weaponHammer: '🔨 Hammer',
+    weaponAxe: '🪓 Twin Axe',
+    weaponSword: '🗡️ Sword',
+    leaderboardEntry: (i, name, time, lvl) => `${i}. ${name} — ${time} (Lv.${lvl})`,
+    noScores: 'No scores yet — finish a run first!',
+    achSurvive5: '🏅 Survived 5 minutes!',
+    achLevel10: '🏅 Reached level 10!',
+    achBoss: '🏅 Defeated a world boss!',
+    achKills50: '🏅 Defeated 50 enemies!',
   },
 };
 const UPGRADE_TEXT = {
@@ -251,6 +281,57 @@ document.getElementById('startBtn').addEventListener('click', () => {
   socket.emit('startGame', difficulty);
 });
 
+document.querySelectorAll('input[name="weapon"]').forEach((el) => {
+  el.addEventListener('change', () => {
+    socket.emit('setWeapon', el.value);
+  });
+});
+
+socket.on('lobbyUpdate', ({ players }) => {
+  waitingPlayerList.innerHTML = players.map((p) => `<span>${p.name}</span>`).join('');
+});
+
+function renderLeaderboard(list) {
+  if (!list || list.length === 0) {
+    leaderboardList.innerHTML = `<li style="list-style:none">${t('noScores')}</li>`;
+    return;
+  }
+  leaderboardList.innerHTML = list
+    .map((e, i) => `<li>${t('leaderboardEntry', i + 1, e.name, formatTime(e.elapsed), e.level)}</li>`)
+    .join('');
+}
+socket.on('leaderboard', (list) => renderLeaderboard(list));
+
+// --- Achievements (client-side, unlocked state kept in localStorage) ---
+const unlockedAchievements = new Set(JSON.parse(localStorage.getItem('vs_achievements') || '[]'));
+let toastQueue = [];
+let toastShowing = false;
+function unlockAchievement(id, textKey) {
+  if (unlockedAchievements.has(id)) return;
+  unlockedAchievements.add(id);
+  localStorage.setItem('vs_achievements', JSON.stringify([...unlockedAchievements]));
+  toastQueue.push(t(textKey));
+  showNextToast();
+}
+function showNextToast() {
+  if (toastShowing || toastQueue.length === 0) return;
+  toastShowing = true;
+  achievementToast.textContent = toastQueue.shift();
+  achievementToast.classList.remove('hidden');
+  setTimeout(() => {
+    achievementToast.classList.add('hidden');
+    setTimeout(() => { toastShowing = false; showNextToast(); }, 400);
+  }, 3000);
+}
+function checkAchievements(state) {
+  const me = state.players.find((p) => p.id === myId);
+  if (!me) return;
+  if (state.elapsed >= 300) unlockAchievement('survive5', 'achSurvive5');
+  if (me.level >= 10) unlockAchievement('level10', 'achLevel10');
+  if (me.eliteKills >= 4) unlockAchievement('boss', 'achBoss');
+  if (me.kills >= 50) unlockAchievement('kills50', 'achKills50');
+}
+
 // --- Particles & juice ---
 let particles = [];
 let levelBursts = [];
@@ -299,7 +380,10 @@ function triggerShake(magnitude, time) {
   shake.time = Math.max(shake.time, time);
 }
 
-const ENEMY_PARTICLE_COLOR = { wolf: '#c0c8d8', skeleton: '#e8e0c8', draugr: '#7ada7a' };
+const ENEMY_PARTICLE_COLOR = {
+  wolf: '#c0c8d8', skeleton: '#e8e0c8', draugr: '#7ada7a',
+  caster: '#8a7ad8', exploder: '#f0a040', worldboss: '#c060e0',
+};
 
 // --- Game state updates ---
 socket.on('state', (state) => {
@@ -311,7 +395,10 @@ socket.on('state', (state) => {
     gameScreen.classList.remove('hidden');
   }
   playerCount.textContent = t('playerCount', state.players.length);
-  if (roomStarted) updateHud(state);
+  if (roomStarted) {
+    updateHud(state);
+    checkAchievements(state);
+  }
   if (state.gameOver) showGameOver(state);
 });
 
@@ -673,7 +760,8 @@ function render() {
     ctx.restore();
   }
 
-  // projectiles: spinning hammers with a glowing trail
+  // projectiles: spinning weapon matching each player's chosen loadout
+  const weaponByOwner = new Map(latestState.players.map((p) => [p.id, p.weapon || 'hammer']));
   for (const pr of latestState.projectiles) {
     const s = worldToScreen(pr.x, pr.y, cam);
     ctx.save();
@@ -682,11 +770,26 @@ function render() {
     ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(240,208,96,0.4)'; ctx.fill();
     ctx.restore();
-    drawSprite(SPRITES.weapon, s.x, s.y, 20, { rotation: (now / 80 + (pr.id || 0)) % (Math.PI * 2) });
+    const weaponSprite = SPRITES['weapon_' + (weaponByOwner.get(pr.ownerId) || 'hammer')] || SPRITES.weapon_hammer;
+    drawSprite(weaponSprite, s.x, s.y, 20, { rotation: (now / 80 + (pr.id || 0)) % (Math.PI * 2) });
+  }
+
+  // enemy projectiles: glowing magic bolts
+  for (const pr of (latestState.enemyProjectiles || [])) {
+    const s = worldToScreen(pr.x, pr.y, cam);
+    ctx.save();
+    ctx.shadowColor = '#8a7ad8';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#b8a0f0';
+    ctx.beginPath(); ctx.arc(s.x, s.y, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
   }
 
   // enemies
-  const ENEMY_SPRITE = { wolf: SPRITES.wolf, skeleton: SPRITES.skeleton, draugr: SPRITES.draugr };
+  const ENEMY_SPRITE = {
+    wolf: SPRITES.wolf, skeleton: SPRITES.skeleton, draugr: SPRITES.draugr,
+    caster: SPRITES.caster, exploder: SPRITES.exploder, worldboss: SPRITES.worldboss,
+  };
   for (const e of latestState.enemies) {
     const base = worldToScreen(e.x, e.y, cam);
     const bob = Math.sin(now / 180 + e.id) * 2.5;
@@ -695,32 +798,33 @@ function render() {
     const isFlashing = flashedAt && now - flashedAt < 120;
 
     if (e.elite) {
-      const auraR = 26 + 4 * Math.sin(now / 200);
+      const auraColor = e.worldBoss ? '192,96,224' : '224,96,96';
+      const auraR = (e.worldBoss ? 38 : 26) + 4 * Math.sin(now / 200);
       ctx.save();
-      ctx.strokeStyle = 'rgba(224,96,96,0.6)';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = `rgba(${auraColor},0.6)`;
+      ctx.lineWidth = e.worldBoss ? 3 : 2;
       ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.stroke();
-      ctx.strokeStyle = 'rgba(224,96,96,0.3)';
+      ctx.strokeStyle = `rgba(${auraColor},0.3)`;
       ctx.beginPath(); ctx.arc(s.x, s.y, auraR + 8, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
-    const size = e.elite ? 44 : 30;
+    const size = e.worldBoss ? 64 : (e.elite ? 44 : 30);
     const walk = Math.sin(now / 110 + e.id);
     drawSprite(ENEMY_SPRITE[e.type] || SPRITES.skeleton, s.x, s.y, size, {
       flash: isFlashing, scaleX: 1 - walk * 0.06, scaleY: 1 + walk * 0.06,
     });
 
-    const w = e.elite ? 50 : 26;
-    const barY = e.elite ? -34 : -24;
+    const w = e.worldBoss ? 74 : (e.elite ? 50 : 26);
+    const barY = e.worldBoss ? -48 : (e.elite ? -34 : -24);
     if (e.elite && e.name) {
-      ctx.fillStyle = '#e06060';
-      ctx.font = 'bold 14px Georgia';
-      ctx.fillText(`☠ ${e.name} ☠`, s.x, s.y - 44);
+      ctx.fillStyle = e.worldBoss ? '#c060e0' : '#e06060';
+      ctx.font = e.worldBoss ? 'bold 17px Georgia' : 'bold 14px Georgia';
+      ctx.fillText(`☠ ${e.name} ☠`, s.x, s.y - (e.worldBoss ? 62 : 44));
     }
     ctx.fillStyle = '#402020';
     ctx.fillRect(s.x - w / 2, s.y + barY, w, 5);
-    ctx.fillStyle = e.elite ? '#e06060' : '#c0392b';
+    ctx.fillStyle = e.worldBoss ? '#c060e0' : (e.elite ? '#e06060' : '#c0392b');
     ctx.fillRect(s.x - w / 2, s.y + barY, w * Math.max(0, e.hp / e.maxHp), 5);
   }
 

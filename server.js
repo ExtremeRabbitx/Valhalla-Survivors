@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const { randomUUID } = require('crypto');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -16,6 +16,7 @@ const WORLD_H = 2000;
 const XP_ORB_RADIUS = 8;
 const PLAYER_RADIUS = 16;
 const ENEMY_RADIUS = 14;
+const WORLD_BOSS_INTERVAL = 100; // seconds between guaranteed world bosses
 
 const UPGRADES = [
   { id: 'damage', label: '⚔️ เพิ่มดาเมจ', apply: (p) => { p.damage += 4; } },
@@ -34,6 +35,12 @@ const DIFFICULTY = {
   hard: { hp: 1.45, damage: 1.35, spawn: 1.3 },
 };
 
+const WEAPONS = {
+  hammer: { dmg: 1, atkSpeed: 1, range: 1 },
+  axe: { dmg: 0.7, atkSpeed: 1.5, range: 0.85 },
+  sword: { dmg: 0.85, atkSpeed: 1, range: 1.35 },
+};
+
 function randomUpgrades() {
   const shuffled = [...UPGRADES].sort(() => Math.random() - 0.5);
   return shuffled.slice(0, 3).map((u) => ({ id: u.id, label: u.label }));
@@ -47,6 +54,8 @@ function makePlayer(id, name) {
   return {
     id,
     name,
+    weaponChoice: 'hammer',
+    weapon: 'hammer',
     x: WORLD_W / 2 + (Math.random() * 100 - 50),
     y: WORLD_H / 2 + (Math.random() * 100 - 50),
     dx: 0,
@@ -67,10 +76,17 @@ function makePlayer(id, name) {
     invuln: 0,
     pendingLevelUp: null,
     kills: 0,
+    eliteKills: 0,
   };
 }
 
 const rooms = new Map();
+
+function broadcastLobby(room) {
+  io.to(room.id).emit('lobbyUpdate', {
+    players: [...room.players.values()].map((p) => ({ name: p.name, weaponChoice: p.weaponChoice })),
+  });
+}
 
 function createRoom() {
   const id = Math.random().toString(36).substring(2, 7).toUpperCase();
@@ -79,12 +95,16 @@ function createRoom() {
     players: new Map(),
     enemies: [],
     projectiles: [],
+    enemyProjectiles: [],
     orbs: [],
     started: false,
     gameOver: false,
+    leaderboardRecorded: false,
     difficulty: 'normal',
     elapsed: 0,
     spawnTimer: 0,
+    worldBossTimer: WORLD_BOSS_INTERVAL,
+    worldBossAlive: false,
     nextEnemyId: 1,
     nextProjId: 1,
     nextOrbId: 1,
@@ -93,7 +113,23 @@ function createRoom() {
   return room;
 }
 
-function spawnEnemy(room) {
+const NON_ELITE_TYPES = [
+  { type: 'wolf', weight: 0.4 },
+  { type: 'skeleton', weight: 0.35 },
+  { type: 'caster', weight: 0.15 },
+  { type: 'exploder', weight: 0.1 },
+];
+function pickEnemyType() {
+  const r = Math.random();
+  let acc = 0;
+  for (const e of NON_ELITE_TYPES) {
+    acc += e.weight;
+    if (r < acc) return e.type;
+  }
+  return 'wolf';
+}
+
+function spawnEnemy(room, forceWorldBoss) {
   const angle = Math.random() * Math.PI * 2;
   const dist = 700 + Math.random() * 200;
   const players = [...room.players.values()].filter((p) => p.alive);
@@ -104,31 +140,59 @@ function spawnEnemy(room) {
   const minute = room.elapsed / 60;
   const diff = DIFFICULTY[room.difficulty] || DIFFICULTY.normal;
   // Co-op scaling: more players alive => enemies tankier so the fight stays a real fight,
-  // but not linearly, so a duo isn't punished as hard as raw player-count math would suggest.
-  const coopScale = 1 + 0.35 * (players.length - 1);
-  const isElite = Math.random() < Math.min(0.15, minute * 0.03);
-  const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * (isElite ? 4 : 1));
-  const speed = (60 + Math.random() * 20 + minute * 2) * (isElite ? 0.8 : 1);
+  // but not linearly, so a duo isn't punished as hard as raw player-count math would suggest. Capped for larger groups.
+  const coopScale = Math.min(2.6, 1 + 0.35 * (players.length - 1));
+  const isElite = !forceWorldBoss && Math.random() < Math.min(0.15, minute * 0.03);
+  const isWorldBoss = !!forceWorldBoss;
+  const type = isWorldBoss ? 'worldboss' : (isElite ? 'draugr' : pickEnemyType());
+  const eliteMult = isWorldBoss ? 16 : (isElite ? 4 : 1);
+  const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * eliteMult);
+  const speed = (60 + Math.random() * 20 + minute * 2) * (isElite || isWorldBoss ? 0.75 : 1);
   room.enemies.push({
     id: room.nextEnemyId++,
     x, y, hp, maxHp: hp,
     speed,
-    damage: Math.round((4 + minute * 1.5) * diff.damage * (isElite ? 2 : 1)),
-    elite: isElite,
-    name: isElite ? nextBossName() : null,
-    type: isElite ? 'draugr' : (Math.random() < 0.5 ? 'wolf' : 'skeleton'),
+    damage: Math.round((4 + minute * 1.5) * diff.damage * (isWorldBoss ? 3 : (isElite ? 2 : 1))),
+    elite: isElite || isWorldBoss,
+    worldBoss: isWorldBoss,
+    name: (isElite || isWorldBoss) ? nextBossName(isWorldBoss) : null,
+    type,
+    attackCooldown: 0,
   });
+  if (isWorldBoss) room.worldBossAlive = true;
 }
 
 const BOSS_NAMES = ['ShennyS', 'POND', 'POOMPAE', 'RIPRY'];
+const WORLD_BOSS_NAMES = ['Fenrir', 'Jörmungandr', 'Surtr', 'Hel'];
 let bossNamePool = [];
-function nextBossName() {
+function nextBossName(isWorldBoss) {
+  if (isWorldBoss) return WORLD_BOSS_NAMES[Math.floor(Math.random() * WORLD_BOSS_NAMES.length)];
   if (bossNamePool.length === 0) bossNamePool = [...BOSS_NAMES].sort(() => Math.random() - 0.5);
   return bossNamePool.pop();
 }
 
 function distance(ax, ay, bx, by) {
   return Math.hypot(ax - bx, ay - by);
+}
+
+// --- Leaderboard (in-memory, best-effort persisted to disk) ---
+const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+let leaderboard = [];
+try {
+  leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf8'));
+} catch (e) { leaderboard = []; }
+
+function recordLeaderboard(room) {
+  for (const p of room.players.values()) {
+    leaderboard.push({
+      name: p.name, elapsed: Math.round(room.elapsed), level: p.level,
+      kills: p.kills, difficulty: room.difficulty, date: Date.now(),
+    });
+  }
+  leaderboard.sort((a, b) => b.elapsed - a.elapsed);
+  leaderboard = leaderboard.slice(0, 10);
+  try { fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard)); } catch (e) { /* best effort */ }
+  io.emit('leaderboard', leaderboard);
 }
 
 function tickRoom(room) {
@@ -139,6 +203,10 @@ function tickRoom(room) {
   const alivePlayers = [...room.players.values()].filter((p) => p.alive);
   if (alivePlayers.length === 0) {
     room.gameOver = true;
+    if (!room.leaderboardRecorded) {
+      room.leaderboardRecorded = true;
+      recordLeaderboard(room);
+    }
     return;
   }
 
@@ -151,6 +219,15 @@ function tickRoom(room) {
   while (room.spawnTimer >= spawnInterval) {
     room.spawnTimer -= spawnInterval;
     spawnEnemy(room);
+  }
+
+  // world boss timer
+  if (!room.worldBossAlive) {
+    room.worldBossTimer -= dt;
+    if (room.worldBossTimer <= 0) {
+      room.worldBossTimer = WORLD_BOSS_INTERVAL;
+      spawnEnemy(room, true);
+    }
   }
 
   // move players
@@ -167,7 +244,7 @@ function tickRoom(room) {
     if (p.regen > 0) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
   }
 
-  // move enemies toward nearest player
+  // move enemies toward nearest player (casters keep their distance and shoot instead of meleeing)
   for (const e of room.enemies) {
     let nearest = null;
     let best = Infinity;
@@ -175,22 +252,61 @@ function tickRoom(room) {
       const d = distance(e.x, e.y, p.x, p.y);
       if (d < best) { best = d; nearest = p; }
     }
-    if (nearest) {
-      const dx = nearest.x - e.x;
-      const dy = nearest.y - e.y;
-      const len = Math.hypot(dx, dy) || 1;
-      e.x += (dx / len) * e.speed * dt;
-      e.y += (dy / len) * e.speed * dt;
-      if (best < PLAYER_RADIUS + ENEMY_RADIUS && nearest.invuln <= 0) {
-        nearest.hp -= e.damage;
-        nearest.invuln = 0.6;
-        if (nearest.hp <= 0) {
-          nearest.hp = 0;
-          nearest.alive = false;
-        }
+    if (!nearest) continue;
+    const dx = nearest.x - e.x;
+    const dy = nearest.y - e.y;
+    const len = Math.hypot(dx, dy) || 1;
+
+    if (e.type === 'caster') {
+      const preferredRange = 190;
+      if (best > preferredRange + 20) {
+        e.x += (dx / len) * e.speed * dt;
+        e.y += (dy / len) * e.speed * dt;
+      } else if (best < preferredRange - 20) {
+        e.x -= (dx / len) * e.speed * dt * 0.6;
+        e.y -= (dy / len) * e.speed * dt * 0.6;
+      }
+      e.attackCooldown -= TICK_MS;
+      if (e.attackCooldown <= 0 && best <= preferredRange + 40) {
+        e.attackCooldown = 2200;
+        room.enemyProjectiles.push({
+          id: room.nextProjId++,
+          x: e.x, y: e.y,
+          vx: (dx / len) * 220, vy: (dy / len) * 220,
+          damage: e.damage, life: 2.5,
+        });
+      }
+      continue;
+    }
+
+    e.x += (dx / len) * e.speed * dt;
+    e.y += (dy / len) * e.speed * dt;
+    if (best < PLAYER_RADIUS + ENEMY_RADIUS && nearest.invuln <= 0) {
+      nearest.hp -= e.damage;
+      nearest.invuln = 0.6;
+      if (nearest.hp <= 0) {
+        nearest.hp = 0;
+        nearest.alive = false;
       }
     }
   }
+
+  // enemy projectiles vs players
+  room.enemyProjectiles = room.enemyProjectiles.filter((pr) => {
+    pr.x += pr.vx * dt;
+    pr.y += pr.vy * dt;
+    pr.life -= dt;
+    if (pr.life <= 0) return false;
+    for (const p of alivePlayers) {
+      if (p.invuln <= 0 && distance(pr.x, pr.y, p.x, p.y) < PLAYER_RADIUS + 6) {
+        p.hp -= pr.damage;
+        p.invuln = 0.4;
+        if (p.hp <= 0) { p.hp = 0; p.alive = false; }
+        return false;
+      }
+    }
+    return true;
+  });
 
   // player attacks
   for (const p of room.players.values()) {
@@ -237,13 +353,26 @@ function tickRoom(room) {
     return true;
   });
 
-  // remove dead enemies -> spawn xp orbs
+  // remove dead enemies -> spawn xp orbs (+ exploders burst nearby players)
   const survivors = [];
   for (const e of room.enemies) {
     if (e.hp <= 0) {
-      room.orbs.push({ id: room.nextOrbId++, x: e.x, y: e.y, value: e.elite ? 25 : 8 });
+      room.orbs.push({ id: room.nextOrbId++, x: e.x, y: e.y, value: e.worldBoss ? 120 : (e.elite ? 25 : 8) });
       const owner = alivePlayers[0];
-      if (owner) owner.kills += 1;
+      if (owner) {
+        owner.kills += 1;
+        if (e.elite) owner.eliteKills += 1;
+      }
+      if (e.type === 'exploder') {
+        const burstDmg = Math.round(15 * (DIFFICULTY[room.difficulty] || DIFFICULTY.normal).damage);
+        for (const p of alivePlayers) {
+          if (distance(e.x, e.y, p.x, p.y) < 90) {
+            p.hp -= burstDmg;
+            if (p.hp <= 0) { p.hp = 0; p.alive = false; }
+          }
+        }
+      }
+      if (e.worldBoss) room.worldBossAlive = false;
     } else {
       survivors.push(e);
     }
@@ -267,11 +396,12 @@ function tickRoom(room) {
     for (const p of alivePlayers) {
       if (!p.pendingLevelUp && distance(orb.x, orb.y, p.x, p.y) < PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius) {
         p.xp += orb.value;
-        const needed = xpForLevel(p.level);
-        if (p.xp >= needed) {
+        let needed = xpForLevel(p.level);
+        while (p.xp >= needed) {
           p.xp -= needed;
           p.level += 1;
           p.pendingLevelUp = randomUpgrades();
+          needed = xpForLevel(p.level);
         }
         return false;
       }
@@ -290,10 +420,13 @@ function serializeRoom(room) {
     players: [...room.players.values()].map((p) => ({
       id: p.id, name: p.name, x: p.x, y: p.y, hp: p.hp, maxHp: p.maxHp,
       level: p.level, xp: p.xp, xpNeeded: xpForLevel(p.level), alive: p.alive,
-      pendingLevelUp: p.pendingLevelUp, kills: p.kills,
+      pendingLevelUp: p.pendingLevelUp, kills: p.kills, eliteKills: p.eliteKills, weapon: p.weapon,
     })),
-    enemies: room.enemies.map((e) => ({ id: e.id, x: e.x, y: e.y, hp: e.hp, maxHp: e.maxHp, type: e.type, elite: e.elite, name: e.name })),
-    projectiles: room.projectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
+    enemies: room.enemies.map((e) => ({
+      id: e.id, x: e.x, y: e.y, hp: e.hp, maxHp: e.maxHp, type: e.type, elite: e.elite, worldBoss: e.worldBoss, name: e.name,
+    })),
+    projectiles: room.projectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y, ownerId: pr.ownerId })),
+    enemyProjectiles: room.enemyProjectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
     orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y })),
   };
 }
@@ -301,28 +434,68 @@ function serializeRoom(room) {
 io.on('connection', (socket) => {
   let currentRoomId = null;
 
+  socket.emit('leaderboard', leaderboard);
+
+  // A socket must only ever be in one game room at a time — leave whatever
+  // room it was previously in (e.g. from an earlier createRoom/joinRoom on
+  // the same connection) so it doesn't keep receiving stale state broadcasts.
+  function leaveCurrentRoom() {
+    if (!currentRoomId) return;
+    const prevRoom = rooms.get(currentRoomId);
+    if (prevRoom) {
+      prevRoom.players.delete(socket.id);
+      socket.leave(currentRoomId);
+      if (prevRoom.players.size === 0) {
+        rooms.delete(prevRoom.id);
+      } else {
+        broadcastLobby(prevRoom);
+      }
+    }
+    currentRoomId = null;
+  }
+
   socket.on('createRoom', (name, cb) => {
+    leaveCurrentRoom();
     const room = createRoom();
     currentRoomId = room.id;
     socket.join(room.id);
     room.players.set(socket.id, makePlayer(socket.id, name || 'Player'));
     cb({ roomId: room.id });
+    broadcastLobby(room);
   });
 
   socket.on('joinRoom', (roomId, name, cb) => {
     const room = rooms.get((roomId || '').toUpperCase());
     if (!room) { cb({ error: 'roomNotFound' }); return; }
     if (room.started) { cb({ error: 'alreadyStarted' }); return; }
+    leaveCurrentRoom();
     currentRoomId = room.id;
     socket.join(room.id);
     room.players.set(socket.id, makePlayer(socket.id, name || 'Player'));
     cb({ roomId: room.id });
+    broadcastLobby(room);
+  });
+
+  socket.on('setWeapon', (weaponId) => {
+    const room = rooms.get(currentRoomId);
+    if (!room || room.started) return;
+    const p = room.players.get(socket.id);
+    if (!p || !WEAPONS[weaponId]) return;
+    p.weaponChoice = weaponId;
+    broadcastLobby(room);
   });
 
   socket.on('startGame', (difficulty) => {
     const room = rooms.get(currentRoomId);
     if (room) {
       room.difficulty = DIFFICULTY[difficulty] ? difficulty : 'normal';
+      for (const p of room.players.values()) {
+        const w = WEAPONS[p.weaponChoice] || WEAPONS.hammer;
+        p.weapon = p.weaponChoice;
+        p.damage = Math.round(p.damage * w.dmg);
+        p.attackCooldownMax = Math.round(p.attackCooldownMax / w.atkSpeed);
+        p.attackRange = Math.round(p.attackRange * w.range);
+      }
       room.started = true;
     }
   });
@@ -350,6 +523,8 @@ io.on('connection', (socket) => {
       room.players.delete(socket.id);
       if (room.players.size === 0) {
         rooms.delete(room.id);
+      } else {
+        broadcastLobby(room);
       }
     }
   });
