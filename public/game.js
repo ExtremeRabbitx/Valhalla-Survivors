@@ -210,19 +210,25 @@ function updateHud(state) {
 
   const me = state.players.find((p) => p.id === myId);
   if (me && me.pendingLevelUp) {
-    upgradeOverlay.classList.remove('hidden');
-    upgradeChoices.innerHTML = '';
-    for (const u of me.pendingLevelUp) {
-      const card = document.createElement('div');
-      card.className = 'upgrade-card';
-      card.textContent = u.label;
-      card.addEventListener('click', () => {
-        socket.emit('chooseUpgrade', u.id);
-        upgradeOverlay.classList.add('hidden');
-      });
-      upgradeChoices.appendChild(card);
+    const signature = me.pendingLevelUp.map((u) => u.id).join(',');
+    if (upgradeChoices.dataset.signature !== signature) {
+      upgradeChoices.dataset.signature = signature;
+      upgradeOverlay.classList.remove('hidden');
+      upgradeChoices.innerHTML = '';
+      for (const u of me.pendingLevelUp) {
+        const card = document.createElement('div');
+        card.className = 'upgrade-card';
+        card.textContent = u.label;
+        card.addEventListener('click', () => {
+          socket.emit('chooseUpgrade', u.id);
+          upgradeOverlay.classList.add('hidden');
+          upgradeChoices.dataset.signature = '';
+        });
+        upgradeChoices.appendChild(card);
+      }
     }
   } else {
+    upgradeChoices.dataset.signature = '';
     upgradeOverlay.classList.add('hidden');
   }
 }
