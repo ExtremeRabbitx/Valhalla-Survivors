@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: nordic-survivors
+    name: valhalla-survivors
     env: node
     plan: free
     buildCommand: npm install
