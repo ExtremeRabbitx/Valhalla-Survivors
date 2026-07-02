@@ -25,6 +25,7 @@ const UPGRADES = [
   { id: 'range', label: '🏹 ระยะโจมไกลขึ้น', apply: (p) => { p.attackRange += 40; } },
   { id: 'multishot', label: '🌀 ยิงหลายทิศทาง', apply: (p) => { p.projectileCount += 1; } },
   { id: 'regen', label: '🌿 ฟื้นฟูเลือด', apply: (p) => { p.regen += 0.5; } },
+  { id: 'magnet', label: '🧲 ดูดพลังไกลขึ้น', apply: (p) => { p.pickupRadius += 35; } },
 ];
 
 function randomUpgrades() {
@@ -53,6 +54,7 @@ function makePlayer(id, name) {
     attackCooldown: 0,
     attackCooldownMax: 500,
     projectileCount: 1,
+    pickupRadius: 40,
     xp: 0,
     level: 1,
     alive: true,
@@ -93,14 +95,17 @@ function spawnEnemy(room) {
   const x = Math.max(20, Math.min(WORLD_W - 20, target.x + Math.cos(angle) * dist));
   const y = Math.max(20, Math.min(WORLD_H - 20, target.y + Math.sin(angle) * dist));
   const minute = room.elapsed / 60;
+  // Co-op scaling: more players alive => enemies tankier so the fight stays a real fight,
+  // but not linearly, so a duo isn't punished as hard as raw player-count math would suggest.
+  const coopScale = 1 + 0.35 * (players.length - 1);
   const isElite = Math.random() < Math.min(0.15, minute * 0.03);
-  const hp = Math.round((20 + minute * 10) * (isElite ? 4 : 1));
+  const hp = Math.round((15 + minute * 8) * coopScale * (isElite ? 4 : 1));
   const speed = (60 + Math.random() * 20 + minute * 2) * (isElite ? 0.8 : 1);
   room.enemies.push({
     id: room.nextEnemyId++,
     x, y, hp, maxHp: hp,
     speed,
-    damage: Math.round((5 + minute * 2) * (isElite ? 2 : 1)),
+    damage: Math.round((4 + minute * 1.5) * (isElite ? 2 : 1)),
     elite: isElite,
     name: isElite ? nextBossName() : null,
     type: isElite ? 'draugr' : (Math.random() < 0.5 ? 'wolf' : 'skeleton'),
@@ -129,9 +134,10 @@ function tickRoom(room) {
     return;
   }
 
-  // spawn waves
+  // spawn waves — more players alive means enemies spawn faster (sqrt curve keeps duo play fair)
   const minute = room.elapsed / 60;
-  const spawnInterval = Math.max(0.35, 1.6 - minute * 0.15);
+  const baseInterval = Math.max(0.4, 1.8 - minute * 0.14);
+  const spawnInterval = baseInterval / Math.sqrt(alivePlayers.length);
   room.spawnTimer += dt;
   while (room.spawnTimer >= spawnInterval) {
     room.spawnTimer -= spawnInterval;
@@ -235,10 +241,22 @@ function tickRoom(room) {
   }
   room.enemies = survivors;
 
-  // orb pickup
+  // orb magnet pull + pickup
+  for (const orb of room.orbs) {
+    for (const p of alivePlayers) {
+      if (p.pendingLevelUp) continue;
+      const d = distance(orb.x, orb.y, p.x, p.y);
+      const pullRange = PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius;
+      if (d < pullRange && d > 1) {
+        const pull = 260 * dt;
+        orb.x += ((p.x - orb.x) / d) * pull;
+        orb.y += ((p.y - orb.y) / d) * pull;
+      }
+    }
+  }
   room.orbs = room.orbs.filter((orb) => {
     for (const p of alivePlayers) {
-      if (!p.pendingLevelUp && distance(orb.x, orb.y, p.x, p.y) < PLAYER_RADIUS + XP_ORB_RADIUS + 20) {
+      if (!p.pendingLevelUp && distance(orb.x, orb.y, p.x, p.y) < PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius) {
         p.xp += orb.value;
         const needed = xpForLevel(p.level);
         if (p.xp >= needed) {

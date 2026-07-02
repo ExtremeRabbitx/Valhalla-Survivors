@@ -70,8 +70,37 @@ document.getElementById('startBtn').addEventListener('click', () => {
   socket.emit('startGame');
 });
 
+// --- Particles & juice ---
+let particles = [];
+const hitFlashes = new Map(); // enemyId -> timestamp
+let shake = { time: 0, magnitude: 0 };
+let damageFlash = 0;
+
+function spawnParticles(x, y, color, count, speed, life) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const s = speed * (0.4 + Math.random() * 0.6);
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * s,
+      vy: Math.sin(angle) * s,
+      life, maxLife: life,
+      color,
+      size: 2 + Math.random() * 3,
+    });
+  }
+}
+
+function triggerShake(magnitude, time) {
+  shake.magnitude = Math.max(shake.magnitude, magnitude);
+  shake.time = Math.max(shake.time, time);
+}
+
+const ENEMY_PARTICLE_COLOR = { wolf: '#c0c8d8', skeleton: '#e8e0c8', draugr: '#7ada7a' };
+
 // --- Game state updates ---
 socket.on('state', (state) => {
+  if (latestState) diffEffects(latestState, state);
   latestState = state;
   if (state.started && !roomStarted) {
     roomStarted = true;
@@ -82,6 +111,36 @@ socket.on('state', (state) => {
   if (roomStarted) updateHud(state);
   if (state.gameOver) showGameOver(state);
 });
+
+function diffEffects(oldState, newState) {
+  const oldEnemies = new Map(oldState.enemies.map((e) => [e.id, e]));
+  const newIds = new Set(newState.enemies.map((e) => e.id));
+  for (const [id, e] of oldEnemies) {
+    if (!newIds.has(id)) {
+      // enemy died
+      spawnParticles(e.x, e.y, ENEMY_PARTICLE_COLOR[e.type] || '#c0392b', e.elite ? 22 : 10, e.elite ? 220 : 140, 0.5);
+      hitFlashes.delete(id);
+    }
+  }
+  for (const e of newState.enemies) {
+    const old = oldEnemies.get(e.id);
+    if (old && e.hp < old.hp) {
+      hitFlashes.set(e.id, performance.now());
+      spawnParticles(e.x, e.y, '#ffe08a', 3, 80, 0.25);
+    }
+  }
+  const oldPlayers = new Map(oldState.players.map((p) => [p.id, p]));
+  for (const p of newState.players) {
+    const old = oldPlayers.get(p.id);
+    if (old && p.hp < old.hp) {
+      spawnParticles(p.x, p.y, '#e06060', 6, 100, 0.3);
+      if (p.id === myId) {
+        triggerShake(8, 0.25);
+        damageFlash = 0.35;
+      }
+    }
+  }
+}
 
 // --- Input handling ---
 const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
@@ -95,6 +154,7 @@ window.addEventListener('keyup', (e) => {
 });
 
 let lastSentDx = null, lastSentDy = null;
+let lastMoveDir = { x: 0, y: -1 };
 setInterval(() => {
   if (!roomStarted) return;
   let dx = 0, dy = 0;
@@ -106,6 +166,7 @@ setInterval(() => {
     lastSentDx = dx; lastSentDy = dy;
     socket.emit('input', { dx, dy });
   }
+  if (dx !== 0 || dy !== 0) lastMoveDir = { x: dx, y: dy };
 }, 50);
 
 // --- Rendering ---
@@ -113,20 +174,26 @@ function worldToScreen(x, y, cam) {
   return { x: x - cam.x + canvas.width / 2, y: y - cam.y + canvas.height / 2 };
 }
 
-const ENEMY_COLORS = { wolf: '#8899aa', skeleton: '#d8d0b8', draugr: '#4a7a4a' };
 const ENEMY_EMOJI = { wolf: '🐺', skeleton: '💀', draugr: '☠️' };
 
-function render() {
-  requestAnimationFrame(render);
-  if (!latestState || !roomStarted) return;
-  const me = latestState.players.find((p) => p.id === myId) || latestState.players[0];
-  const cam = me ? { x: me.x, y: me.y } : { x: 1000, y: 1000 };
+let lastFrameTime = performance.now();
 
-  ctx.fillStyle = '#101826';
+function updateParticles(dt) {
+  particles = particles.filter((p) => {
+    p.life -= dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.92;
+    p.vy *= 0.92;
+    return p.life > 0;
+  });
+}
+
+function drawBackground(cam, t) {
+  ctx.fillStyle = '#0d1420';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // grid
-  ctx.strokeStyle = 'rgba(74,85,120,0.25)';
+  ctx.strokeStyle = 'rgba(74,85,120,0.22)';
   ctx.lineWidth = 1;
   const gridSize = 100;
   const offX = -(cam.x % gridSize);
@@ -138,28 +205,106 @@ function render() {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
   }
 
-  // orbs
-  for (const o of latestState.orbs) {
-    const s = worldToScreen(o.x, o.y, cam);
-    ctx.fillStyle = '#3aa0d4';
-    ctx.beginPath(); ctx.arc(s.x, s.y, 6, 0, Math.PI * 2); ctx.fill();
+  // deterministic decorative runes scattered across the world
+  const cell = 300;
+  const startCol = Math.floor((cam.x - canvas.width / 2) / cell) - 1;
+  const endCol = Math.floor((cam.x + canvas.width / 2) / cell) + 1;
+  const startRow = Math.floor((cam.y - canvas.height / 2) / cell) - 1;
+  const endRow = Math.floor((cam.y + canvas.height / 2) / cell) + 1;
+  ctx.font = '20px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const runes = ['ᚠ', 'ᚢ', 'ᚦ', 'ᚨ', 'ᚱ', 'ᚲ', 'ᛗ', 'ᛟ'];
+  for (let col = startCol; col <= endCol; col++) {
+    for (let row = startRow; row <= endRow; row++) {
+      const hash = Math.abs(Math.sin(col * 127.1 + row * 311.7) * 43758.5453) % 1;
+      if (hash < 0.35) {
+        const wx = col * cell + ((hash * 997) % cell);
+        const wy = row * cell + ((hash * 613) % cell);
+        const s = worldToScreen(wx, wy, cam);
+        const glow = 0.12 + 0.06 * Math.sin(t / 1000 + col + row);
+        ctx.fillStyle = `rgba(212,175,55,${glow})`;
+        ctx.fillText(runes[Math.floor(hash * runes.length * 999) % runes.length], s.x, s.y);
+      }
+    }
   }
 
-  // projectiles
+  // vignette
+  const grad = ctx.createRadialGradient(
+    canvas.width / 2, canvas.height / 2, canvas.height / 3,
+    canvas.width / 2, canvas.height / 2, canvas.height / 1.1
+  );
+  grad.addColorStop(0, 'rgba(0,0,0,0)');
+  grad.addColorStop(1, 'rgba(0,0,0,0.55)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function render() {
+  requestAnimationFrame(render);
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
+  updateParticles(dt);
+  if (shake.time > 0) shake.time -= dt; else shake.magnitude = 0;
+  if (damageFlash > 0) damageFlash = Math.max(0, damageFlash - dt * 1.5);
+
+  if (!latestState || !roomStarted) return;
+  const me = latestState.players.find((p) => p.id === myId) || latestState.players[0];
+  const shakeX = shake.time > 0 ? (Math.random() - 0.5) * shake.magnitude : 0;
+  const shakeY = shake.time > 0 ? (Math.random() - 0.5) * shake.magnitude : 0;
+  const cam = me ? { x: me.x - shakeX, y: me.y - shakeY } : { x: 1000, y: 1000 };
+
+  drawBackground(cam, now);
+
+  // orbs (pulsing glow)
+  for (const o of latestState.orbs) {
+    const s = worldToScreen(o.x, o.y, cam);
+    const pulse = 1 + 0.25 * Math.sin(now / 150 + o.id);
+    ctx.save();
+    ctx.shadowColor = '#3aa0d4';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = '#5cc4f0';
+    ctx.beginPath(); ctx.arc(s.x, s.y, 5 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  // projectiles with small trail
   for (const pr of latestState.projectiles) {
     const s = worldToScreen(pr.x, pr.y, cam);
-    ctx.fillStyle = '#d4af37';
+    ctx.save();
+    ctx.shadowColor = '#d4af37';
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#f0d060';
     ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
   }
 
   // enemies
-  ctx.font = '22px serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const e of latestState.enemies) {
     const s = worldToScreen(e.x, e.y, cam);
+    const flashedAt = hitFlashes.get(e.id);
+    const isFlashing = flashedAt && now - flashedAt < 120;
+
+    if (e.elite) {
+      const auraR = 26 + 4 * Math.sin(now / 200);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(224,96,96,0.6)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.font = e.elite ? '30px serif' : '22px serif';
+    if (isFlashing) {
+      ctx.save();
+      ctx.filter = 'brightness(2.5)';
+    }
     ctx.fillText(ENEMY_EMOJI[e.type] || '👹', s.x, s.y);
+    if (isFlashing) ctx.restore();
+
     const w = e.elite ? 50 : 26;
     const barY = e.elite ? -34 : -24;
     if (e.elite && e.name) {
@@ -173,21 +318,41 @@ function render() {
     ctx.fillRect(s.x - w / 2, s.y + barY, w * Math.max(0, e.hp / e.maxHp), 5);
   }
 
+  // particles (behind players, above enemies)
+  for (const p of particles) {
+    const s = worldToScreen(p.x, p.y, cam);
+    ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(s.x, s.y, p.size, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
   // players
+  ctx.font = '26px serif';
   for (const p of latestState.players) {
     const s = worldToScreen(p.x, p.y, cam);
-    ctx.font = '26px serif';
+    ctx.save();
     ctx.globalAlpha = p.alive ? 1 : 0.3;
+    if (p.id === myId) {
+      ctx.shadowColor = '#d4af37';
+      ctx.shadowBlur = 12;
+    }
     ctx.fillText(p.id === myId ? '🛡️' : '🪓', s.x, s.y);
-    ctx.globalAlpha = 1;
+    ctx.restore();
     ctx.fillStyle = '#e8e4d8';
     ctx.font = '13px Georgia';
     ctx.fillText(p.name, s.x, s.y - 26);
+    ctx.font = '26px serif';
     const w = 34;
     ctx.fillStyle = '#402020';
     ctx.fillRect(s.x - w / 2, s.y + 16, w, 5);
     ctx.fillStyle = '#4caf50';
     ctx.fillRect(s.x - w / 2, s.y + 16, w * Math.max(0, p.hp / p.maxHp), 5);
+  }
+
+  if (damageFlash > 0) {
+    ctx.fillStyle = `rgba(180,20,20,${damageFlash * 0.4})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 }
 render();
