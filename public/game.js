@@ -22,6 +22,23 @@ let myId = null;
 let latestState = null;
 let roomStarted = false;
 
+// --- Sprites (Kenney "Tiny Dungeon" / "Tiny Creatures", CC0) ---
+ctx.imageSmoothingEnabled = false;
+function loadSprite(src) {
+  const img = new Image();
+  img.src = src;
+  return img;
+}
+const SPRITES = {
+  playerMe: loadSprite('/assets/player-me.png'),
+  playerOther: loadSprite('/assets/player-other.png'),
+  wolf: loadSprite('/assets/enemy-wolf.png'),
+  skeleton: loadSprite('/assets/enemy-skeleton.png'),
+  draugr: loadSprite('/assets/enemy-elite.png'),
+  weapon: loadSprite('/assets/weapon-hammer.png'),
+  gem: loadSprite('/assets/xp-gem.png'),
+};
+
 function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
@@ -193,7 +210,18 @@ function worldToScreen(x, y, cam) {
   return { x: x - cam.x + canvas.width / 2, y: y - cam.y + canvas.height / 2 };
 }
 
-const ENEMY_EMOJI = { wolf: '🐺', skeleton: '💀', draugr: '☠️' };
+function drawSprite(img, x, y, size, opts = {}) {
+  if (!img.complete || img.naturalWidth === 0) return;
+  const { rotation = 0, flip = 1, flash = false, alpha = 1 } = opts;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(x, y);
+  if (rotation) ctx.rotate(rotation);
+  ctx.scale(flip, 1);
+  if (flash) ctx.filter = 'brightness(2.5)';
+  ctx.drawImage(img, -size / 2, -size / 2, size, size);
+  ctx.restore();
+}
 
 let lastFrameTime = performance.now();
 
@@ -317,16 +345,15 @@ function render() {
   // orbs (pulsing glow)
   for (const o of latestState.orbs) {
     const s = worldToScreen(o.x, o.y, cam);
-    const pulse = 1 + 0.25 * Math.sin(now / 150 + o.id);
+    const pulse = 1 + 0.2 * Math.sin(now / 150 + o.id);
     ctx.save();
     ctx.shadowColor = '#3aa0d4';
     ctx.shadowBlur = 10;
-    ctx.fillStyle = '#5cc4f0';
-    ctx.beginPath(); ctx.arc(s.x, s.y, 5 * pulse, 0, Math.PI * 2); ctx.fill();
+    drawSprite(SPRITES.gem, s.x, s.y, 18 * pulse);
     ctx.restore();
   }
 
-  // projectiles: spinning axes with a glowing trail
+  // projectiles: spinning hammers with a glowing trail
   for (const pr of latestState.projectiles) {
     const s = worldToScreen(pr.x, pr.y, cam);
     ctx.save();
@@ -334,18 +361,12 @@ function render() {
     ctx.shadowBlur = 10;
     ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(240,208,96,0.4)'; ctx.fill();
-    ctx.translate(s.x, s.y);
-    ctx.rotate((now / 80 + (pr.id || 0)) % (Math.PI * 2));
-    ctx.font = '18px serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('🪓', 0, 0);
     ctx.restore();
+    drawSprite(SPRITES.weapon, s.x, s.y, 20, { rotation: (now / 80 + (pr.id || 0)) % (Math.PI * 2) });
   }
 
   // enemies
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  const ENEMY_SPRITE = { wolf: SPRITES.wolf, skeleton: SPRITES.skeleton, draugr: SPRITES.draugr };
   for (const e of latestState.enemies) {
     const base = worldToScreen(e.x, e.y, cam);
     const bob = Math.sin(now / 180 + e.id) * 2.5;
@@ -364,13 +385,8 @@ function render() {
       ctx.restore();
     }
 
-    ctx.font = e.elite ? '30px serif' : '22px serif';
-    if (isFlashing) {
-      ctx.save();
-      ctx.filter = 'brightness(2.5)';
-    }
-    ctx.fillText(ENEMY_EMOJI[e.type] || '👹', s.x, s.y);
-    if (isFlashing) ctx.restore();
+    const size = e.elite ? 44 : 30;
+    drawSprite(ENEMY_SPRITE[e.type] || SPRITES.skeleton, s.x, s.y, size, { flash: isFlashing });
 
     const w = e.elite ? 50 : 26;
     const barY = e.elite ? -34 : -24;
@@ -395,21 +411,19 @@ function render() {
   ctx.globalAlpha = 1;
 
   // players
-  ctx.font = '26px serif';
   for (const p of latestState.players) {
     const base = worldToScreen(p.x, p.y, cam);
     const bob = p.alive ? Math.sin(now / 160 + p.x * 0.01) * 2 : 0;
     const s = { x: base.x, y: base.y + bob };
     const facing = playerFacing.get(p.id) || 1;
     ctx.save();
-    ctx.globalAlpha = p.alive ? 1 : 0.3;
     if (p.id === myId) {
       ctx.shadowColor = '#d4af37';
       ctx.shadowBlur = 12;
     }
-    ctx.translate(s.x, s.y);
-    ctx.scale(facing, 1);
-    ctx.fillText(p.id === myId ? '🛡️' : '🪓', 0, 0);
+    drawSprite(p.id === myId ? SPRITES.playerMe : SPRITES.playerOther, s.x, s.y, 34, {
+      flip: facing, alpha: p.alive ? 1 : 0.3,
+    });
     ctx.restore();
     ctx.fillStyle = '#e8e4d8';
     ctx.font = '13px Georgia';
