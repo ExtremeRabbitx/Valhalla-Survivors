@@ -540,8 +540,18 @@ const ENEMY_PARTICLE_COLOR = {
 };
 
 // --- Game state updates ---
+// Client-side interpolation: the server only broadcasts positions 20x/sec (SERVER_TICK_MS),
+// but the canvas draws every animation frame (60/120/144Hz). Without smoothing, entities
+// visibly snap into place every ~50ms no matter how high the display refresh rate is.
+// We keep the last two snapshots and blend positions between them based on elapsed time.
+const SERVER_TICK_MS = 50;
+let prevServerState = null;
+let curServerReceivedAt = 0;
+
 socket.on('state', (state) => {
   if (latestState) diffEffects(latestState, state);
+  prevServerState = latestState;
+  curServerReceivedAt = performance.now();
   latestState = state;
   if (state.started && !roomStarted) {
     roomStarted = true;
@@ -698,6 +708,31 @@ function worldToScreen(x, y, cam) {
 
 function distanceClient(ax, ay, bx, by) {
   return Math.hypot(ax - bx, ay - by);
+}
+
+// Interpolation maps built once per frame; ipos() looks up an entity's previous-tick
+// position (by id) and blends toward its current position using the frame's alpha.
+let interpMaps = null;
+let interpAlpha = 1;
+function buildInterpMaps(now) {
+  if (!prevServerState) { interpMaps = null; interpAlpha = 1; return; }
+  interpAlpha = Math.max(0, Math.min(1.4, (now - curServerReceivedAt) / SERVER_TICK_MS));
+  interpMaps = {
+    players: new Map(prevServerState.players.map((p) => [p.id, p])),
+    enemies: new Map(prevServerState.enemies.map((e) => [e.id, e])),
+    projectiles: new Map(prevServerState.projectiles.map((p) => [p.id, p])),
+    enemyProjectiles: new Map((prevServerState.enemyProjectiles || []).map((p) => [p.id, p])),
+    orbs: new Map(prevServerState.orbs.map((o) => [o.id, o])),
+  };
+}
+function ipos(entity, kind) {
+  if (!interpMaps) return entity;
+  const prev = interpMaps[kind].get(entity.id);
+  if (!prev) return entity;
+  return {
+    x: prev.x + (entity.x - prev.x) * interpAlpha,
+    y: prev.y + (entity.y - prev.y) * interpAlpha,
+  };
 }
 
 function drawSprite(img, x, y, size, opts = {}) {
@@ -897,7 +932,9 @@ function render() {
   if (damageFlash > 0) damageFlash = Math.max(0, damageFlash - dt * 1.5);
 
   if (!latestState || !roomStarted) return;
-  const me = latestState.players.find((p) => p.id === myId) || latestState.players[0];
+  buildInterpMaps(now);
+  const meRaw = latestState.players.find((p) => p.id === myId) || latestState.players[0];
+  const me = meRaw ? { ...meRaw, ...ipos(meRaw, 'players') } : null;
   const shakeX = shake.time > 0 ? (Math.random() - 0.5) * shake.magnitude : 0;
   const shakeY = shake.time > 0 ? (Math.random() - 0.5) * shake.magnitude : 0;
   const cam = me ? { x: me.x - shakeX, y: me.y - shakeY } : { x: 1000, y: 1000 };
@@ -910,7 +947,8 @@ function render() {
   // warm light pooling under each living player
   for (const p of latestState.players) {
     if (!p.alive) continue;
-    const s = worldToScreen(p.x, p.y, cam);
+    const lp = ipos(p, 'players');
+    const s = worldToScreen(lp.x, lp.y, cam);
     const lightGrad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, 140);
     lightGrad.addColorStop(0, 'rgba(212,175,55,0.12)');
     lightGrad.addColorStop(1, 'rgba(212,175,55,0)');
@@ -920,7 +958,8 @@ function render() {
 
   // orbs (pulsing glow) — relics glow gold, gold coins render as coins, XP stays blue
   for (const o of latestState.orbs) {
-    const s = worldToScreen(o.x, o.y, cam);
+    const op = ipos(o, 'orbs');
+    const s = worldToScreen(op.x, op.y, cam);
     const pulse = 1 + 0.2 * Math.sin(now / 150 + o.id);
     if (o.gold) {
       ctx.save();
@@ -988,7 +1027,8 @@ function render() {
   // projectiles: spinning weapon matching each player's chosen loadout
   const weaponByOwner = new Map(latestState.players.map((p) => [p.id, p.weapon || 'hammer']));
   for (const pr of latestState.projectiles) {
-    const s = worldToScreen(pr.x, pr.y, cam);
+    const prp = ipos(pr, 'projectiles');
+    const s = worldToScreen(prp.x, prp.y, cam);
     ctx.save();
     ctx.shadowColor = '#d4af37';
     ctx.shadowBlur = 10;
@@ -1001,7 +1041,8 @@ function render() {
 
   // enemy projectiles: glowing magic bolts
   for (const pr of (latestState.enemyProjectiles || [])) {
-    const s = worldToScreen(pr.x, pr.y, cam);
+    const erp = ipos(pr, 'enemyProjectiles');
+    const s = worldToScreen(erp.x, erp.y, cam);
     ctx.save();
     ctx.shadowColor = '#8a7ad8';
     ctx.shadowBlur = 12;
@@ -1016,7 +1057,8 @@ function render() {
     caster: SPRITES.caster, exploder: SPRITES.exploder, worldboss: SPRITES.worldboss,
   };
   for (const e of latestState.enemies) {
-    const base = worldToScreen(e.x, e.y, cam);
+    const ep = ipos(e, 'enemies');
+    const base = worldToScreen(ep.x, ep.y, cam);
     const bob = Math.sin(now / 180 + e.id) * 2.5;
     const s = { x: base.x, y: base.y + bob };
     const flashedAt = hitFlashes.get(e.id);
@@ -1064,10 +1106,11 @@ function render() {
 
   // players
   for (const p of latestState.players) {
+    const pp = ipos(p, 'players');
     const isMoving = p.alive && (now - (playerMoving.get(p.id) || 0)) < 150;
     const bobSpeed = isMoving ? 90 : 500;
-    const bob = p.alive ? Math.sin(now / bobSpeed + p.x * 0.01) * (isMoving ? 3 : 1) : 0;
-    const base = worldToScreen(p.x, p.y, cam);
+    const bob = p.alive ? Math.sin(now / bobSpeed + pp.x * 0.01) * (isMoving ? 3 : 1) : 0;
+    const base = worldToScreen(pp.x, pp.y, cam);
     const s = { x: base.x, y: base.y + bob };
     const facing = playerFacing.get(p.id) || 1;
     const walk = isMoving ? Math.sin(now / 90) : 0;
