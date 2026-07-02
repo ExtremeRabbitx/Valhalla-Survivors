@@ -47,6 +47,12 @@ html, body {
   color: #cfd6ea;
 }
 .difficulty-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.desc-text {
+  font-size: 0.78em;
+  color: #8894b8;
+  margin: -6px 0 4px;
+  max-width: 420px;
+}
 
 #leaderboardBox {
   margin-top: 10px;

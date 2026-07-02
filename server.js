@@ -36,6 +36,10 @@ const ENDLESS_THRESHOLD = 900; // 15 minutes — scaling accelerates and a separ
 const BASH_RADIUS = 100;
 const HEAL_RADIUS = 200;
 const VOLLEY_COUNT = 10;
+const MAX_ENEMIES = 180; // hard cap so long games don't slow to a crawl as enemy count balloons
+const POWERUP_CHANCE = 0.06; // chance a regular kill drops a temporary power-up instead of nothing extra
+const POWERUP_DURATION = 8; // seconds a speed/damage boost lasts
+const POTION_HEAL = 30;
 
 const UPGRADES = [
   { id: 'damage', label: '⚔️ เพิ่มดาเมจ', apply: (p) => { p.damage += 4; } },
@@ -131,6 +135,8 @@ function makePlayer(id, name) {
     piercing: 0,
     reviveProgress: 0,
     synergyActive: false,
+    speedBoostUntil: 0,
+    damageBoostUntil: 0,
   };
 }
 
@@ -198,6 +204,10 @@ function effectiveMinute(room) {
 
 function spawnEnemy(room, opts = {}) {
   const { forceWorldBoss, forceType, atPlayer } = opts;
+  // World bosses are rare and important, so they always get through; regular spawns
+  // (including swarm-event bursts) stop once the room is already crowded, which is
+  // what kept long games slowing to a crawl as the enemy count kept climbing forever.
+  if (!forceWorldBoss && room.enemies.length >= MAX_ENEMIES) return null;
   const angle = Math.random() * Math.PI * 2;
   const dist = 700 + Math.random() * 200;
   const players = [...room.players.values()].filter((p) => p.alive);
@@ -391,9 +401,10 @@ function tickRoom(room) {
     const len = Math.hypot(p.dx, p.dy) || 1;
     const nx = p.dx / len;
     const ny = p.dy / len;
+    const speedNow = p.speed * (room.elapsed < p.speedBoostUntil ? 1.4 : 1);
     if (p.dx !== 0 || p.dy !== 0) {
-      p.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_W - PLAYER_RADIUS, p.x + nx * p.speed * dt));
-      p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_H - PLAYER_RADIUS, p.y + ny * p.speed * dt));
+      p.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_W - PLAYER_RADIUS, p.x + nx * speedNow * dt));
+      p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_H - PLAYER_RADIUS, p.y + ny * speedNow * dt));
     }
     if (p.invuln > 0) p.invuln -= dt;
     if (p.skillCooldown > 0) p.skillCooldown -= TICK_MS;
@@ -499,7 +510,7 @@ function tickRoom(room) {
         .slice(0, p.projectileCount);
       if (targets.length > 0) {
         p.attackCooldown = p.attackCooldownMax;
-        const dmg = Math.round(p.damage * (p.synergyActive ? SYNERGY_DAMAGE_MULT : 1));
+        const dmg = Math.round(p.damage * (p.synergyActive ? SYNERGY_DAMAGE_MULT : 1) * (room.elapsed < p.damageBoostUntil ? 1.3 : 1));
         for (const t of targets) {
           const dx = t.e.x - p.x;
           const dy = t.e.y - p.y;
@@ -546,6 +557,11 @@ function tickRoom(room) {
       const goldAmount = e.worldBoss ? 30 : (e.elite ? 10 : (Math.random() < 0.2 * mod.goldMult ? Math.round(3 * mod.goldMult) : 0));
       if (goldAmount > 0) {
         room.orbs.push({ id: room.nextOrbId++, x: e.x - 10, y: e.y + 10, value: 0, gold: goldAmount });
+      }
+      if (!e.elite && Math.random() < POWERUP_CHANCE) {
+        const roll = Math.random();
+        const power = roll < 0.5 ? 'potion' : (roll < 0.75 ? 'speedboost' : 'damageboost');
+        room.orbs.push({ id: room.nextOrbId++, x: e.x + 10, y: e.y - 10, value: 0, power });
       }
       const owner = alivePlayers[0];
       if (owner) {
@@ -595,6 +611,13 @@ function tickRoom(room) {
           p.gold += orb.gold;
           return false;
         }
+        if (orb.power) {
+          if (orb.power === 'potion') p.hp = Math.min(p.maxHp, p.hp + POTION_HEAL);
+          else if (orb.power === 'speedboost') p.speedBoostUntil = room.elapsed + POWERUP_DURATION;
+          else if (orb.power === 'damageboost') p.damageBoostUntil = room.elapsed + POWERUP_DURATION;
+          io.to(p.id).emit('powerupPickup', orb.power);
+          return false;
+        }
         p.xp += orb.value;
         let needed = xpForLevel(p.level);
         while (p.xp >= needed) {
@@ -627,13 +650,14 @@ function serializeRoom(room) {
       weapon: p.weapon, playerClass: p.playerClass, gold: p.gold,
       skillCooldown: p.skillCooldown, skillCooldownMax: p.skillCooldownMax,
       evolved: p.evolved, reviveProgress: p.reviveProgress, synergyActive: p.synergyActive,
+      speedBoostActive: room.elapsed < p.speedBoostUntil, damageBoostActive: room.elapsed < p.damageBoostUntil,
     })),
     enemies: room.enemies.map((e) => ({
       id: e.id, x: e.x, y: e.y, hp: e.hp, maxHp: e.maxHp, type: e.type, elite: e.elite, worldBoss: e.worldBoss, name: e.name,
     })),
     projectiles: room.projectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y, ownerId: pr.ownerId })),
     enemyProjectiles: room.enemyProjectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
-    orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y, relic: o.relic, gold: o.gold })),
+    orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y, relic: o.relic, gold: o.gold, power: o.power })),
     treasure: room.treasure ? { x: room.treasure.x, y: room.treasure.y, progress: room.treasure.progress, required: TREASURE_REQUIRED, timer: room.treasure.timer } : null,
     merchant: room.merchant ? { x: room.merchant.x, y: room.merchant.y, expires: room.merchant.expires, offers: room.merchant.offers } : null,
   };

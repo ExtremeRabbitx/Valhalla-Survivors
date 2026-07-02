@@ -25,6 +25,8 @@ const goldDisplay = document.getElementById('goldDisplay');
 const skillBtn = document.getElementById('skillBtn');
 const merchantPanel = document.getElementById('merchantPanel');
 const merchantOffers = document.getElementById('merchantOffers');
+const weaponDescEl = document.getElementById('weaponDesc');
+const classDescEl = document.getElementById('classDesc');
 
 let myId = null;
 let latestState = null;
@@ -55,6 +57,7 @@ const SPRITES = {
 const TILESET = loadSprite('/assets/tileset.png');
 const WORLD_SIZE = 2000; // must match server.js WORLD_W/WORLD_H
 const REVIVE_TIME = 5; // must match server.js REVIVE_TIME
+const POTION_HEAL_CLIENT = 30; // must match server.js POTION_HEAL
 
 const minimapCanvas = document.getElementById('minimap');
 const minimapCtx = minimapCanvas.getContext('2d');
@@ -194,6 +197,15 @@ const TRANSLATIONS = {
     modifier_fortune: '🍀 บอสสุ่มเกิดถี่ขึ้นแต่แข็งแกร่งขึ้น',
     modifier_blessed_ground: '✨ ฟื้นฟูเลือดพาสซีฟ +0.5/วิ ให้ทุกคน',
     skillReady: 'ทักษะพร้อมใช้ (กด Space)',
+    powerup_potion: `💊 ยาเพิ่มเลือด +${POTION_HEAL_CLIENT}`,
+    powerup_speedboost: '💨 เร่งความเร็ว! (8 วิ)',
+    powerup_damageboost: '🔥 พลังโจมตีเพิ่มขึ้น! (8 วิ)',
+    weaponDesc_hammer: 'สมดุลทุกด้าน ไม่มีจุดเด่นจุดด้อย เหมาะกับผู้เริ่มต้น',
+    weaponDesc_axe: 'โจมตีเร็วขึ้น 50% แต่ดาเมจต่อครั้งลดลง 30% เหมาะกับสายตีรัว',
+    weaponDesc_sword: 'ระยะโจมตีไกลขึ้น 35% แต่ดาเมจลดลง 15% เหมาะกับสายตั้งรับ',
+    classDesc_warrior: 'เลือดสูงสุด +25% เดินช้าลง 5% สกิล (Space): ฟันรอบตัวสร้างดาเมจ 2.5 เท่าใส่ศัตรูรอบตัว',
+    classDesc_archer: 'เลือดสูงสุด -15% ดาเมจ +5% เดินเร็วขึ้น 10% สกิล (Space): ยิงกระสุน 10 ทิศทางรอบตัวทันที',
+    classDesc_mage: 'เลือดสูงสุด -10% ดาเมจ -5% สกิล (Space): ฮีลตัวเองและเพื่อนในระยะใกล้ 30% ของเลือดสูงสุด',
   },
   en: {
     subtitle: 'Survive the draugr horde as long as you can. Team up with friends!',
@@ -259,6 +271,15 @@ const TRANSLATIONS = {
     modifier_fortune: '🍀 Bosses spawn more often but hit harder',
     modifier_blessed_ground: '✨ Everyone regens +0.5 HP/s',
     skillReady: 'Skill ready (press Space)',
+    powerup_potion: `💊 Heal potion +${POTION_HEAL_CLIENT}`,
+    powerup_speedboost: '💨 Speed boost! (8s)',
+    powerup_damageboost: '🔥 Damage boost! (8s)',
+    weaponDesc_hammer: 'Balanced all-round, no strengths or weaknesses. Good for beginners.',
+    weaponDesc_axe: '50% faster attacks, but 30% less damage per hit. Great for rapid strikes.',
+    weaponDesc_sword: '35% longer range, but 15% less damage. Great for kiting.',
+    classDesc_warrior: '+25% max HP, 5% slower. Skill (Space): melee smash hits all enemies nearby for 2.5x damage.',
+    classDesc_archer: '-15% max HP, +5% damage, 10% faster. Skill (Space): instantly fire 10 shots in all directions.',
+    classDesc_mage: '-10% max HP, -5% damage. Skill (Space): heal yourself and nearby allies for 30% of max HP.',
   },
 };
 const UPGRADE_TEXT = {
@@ -287,6 +308,8 @@ function applyTranslations() {
     el.placeholder = t(el.dataset.i18nPlaceholder);
   });
   langBtn.textContent = lang === 'th' ? 'EN' : 'TH';
+  if (typeof updateWeaponDesc === 'function') updateWeaponDesc();
+  if (typeof updateClassDesc === 'function') updateClassDesc();
 }
 const langBtn = document.getElementById('langBtn');
 langBtn.addEventListener('click', () => {
@@ -318,6 +341,12 @@ socket.on('relicPickup', (count) => {
 
 socket.on('weaponEvolved', () => {
   toastQueue.push(t('weaponEvolved'));
+  showNextToast();
+});
+
+socket.on('powerupPickup', (kind) => {
+  playSfx('pickup', { volume: 0.3 });
+  toastQueue.push(t('powerup_' + kind));
   showNextToast();
 });
 
@@ -367,17 +396,30 @@ document.getElementById('startBtn').addEventListener('click', () => {
   socket.emit('startGame', difficulty);
 });
 
+function updateWeaponDesc() {
+  const val = document.querySelector('input[name="weapon"]:checked').value;
+  weaponDescEl.textContent = t('weaponDesc_' + val);
+}
+function updateClassDesc() {
+  const val = document.querySelector('input[name="class"]:checked').value;
+  classDescEl.textContent = t('classDesc_' + val);
+}
+
 document.querySelectorAll('input[name="weapon"]').forEach((el) => {
   el.addEventListener('change', () => {
     socket.emit('setWeapon', el.value);
+    updateWeaponDesc();
   });
 });
 
 document.querySelectorAll('input[name="class"]').forEach((el) => {
   el.addEventListener('change', () => {
     socket.emit('setClass', el.value);
+    updateClassDesc();
   });
 });
+updateWeaponDesc();
+updateClassDesc();
 
 socket.on('lobbyUpdate', ({ players }) => {
   waitingPlayerList.innerHTML = players.map((p) => `<span>${p.name}</span>`).join('');
@@ -452,7 +494,9 @@ let particles = [];
 let levelBursts = [];
 let damageNumbers = [];
 
+const MAX_DAMAGE_NUMBERS = 150; // long fights spawn a lot of these; cap so rendering doesn't slow down
 function spawnDamageNumber(x, y, amount, color, big) {
+  if (damageNumbers.length > MAX_DAMAGE_NUMBERS) damageNumbers.splice(0, damageNumbers.length - MAX_DAMAGE_NUMBERS);
   damageNumbers.push({
     x, y: y - 14, amount: Math.round(amount), color, big,
     life: 0.7, maxLife: 0.7,
@@ -514,7 +558,9 @@ const embers = Array.from({ length: 36 }, () => ({
   phase: Math.random() * Math.PI * 2,
 }));
 
+const MAX_PARTICLES = 500; // long fights with lots of kills can spike this; cap so it can't snowball
 function spawnParticles(x, y, color, count, speed, life) {
+  if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
     const s = speed * (0.4 + Math.random() * 0.6);
@@ -972,6 +1018,19 @@ function render() {
       ctx.restore();
       continue;
     }
+    if (o.power) {
+      const icon = o.power === 'potion' ? '💊' : o.power === 'speedboost' ? '💨' : '🔥';
+      const glow = o.power === 'potion' ? '#7ae08a' : o.power === 'speedboost' ? '#7ad4f0' : '#f08040';
+      ctx.save();
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = 14;
+      ctx.font = `${20 * pulse}px serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(icon, s.x, s.y);
+      ctx.restore();
+      continue;
+    }
     ctx.save();
     ctx.shadowColor = o.relic ? '#f0d060' : '#3aa0d4';
     ctx.shadowBlur = o.relic ? 18 : 10;
@@ -1146,6 +1205,14 @@ function render() {
     ctx.fillRect(s.x - w / 2, s.y + 16, w, 5);
     ctx.fillStyle = '#4caf50';
     ctx.fillRect(s.x - w / 2, s.y + 16, w * Math.max(0, p.hp / p.maxHp), 5);
+
+    if (p.alive && (p.speedBoostActive || p.damageBoostActive)) {
+      ctx.font = '14px serif';
+      ctx.textAlign = 'center';
+      const icons = (p.speedBoostActive ? '💨' : '') + (p.damageBoostActive ? '🔥' : '');
+      ctx.fillText(icons, s.x + 16, s.y - 20);
+      ctx.font = '26px serif';
+    }
 
     if (!p.alive && p.reviveProgress > 0) {
       const reviveFrac = Math.min(1, p.reviveProgress / REVIVE_TIME);
