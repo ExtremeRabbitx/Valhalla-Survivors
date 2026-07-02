@@ -32,6 +32,7 @@ let myId = null;
 let latestState = null;
 let roomStarted = false;
 let relicCount = parseInt(localStorage.getItem('vs_relics') || '0', 10);
+function relicBonusPercent() { return Math.min(30, relicCount); } // must match server.js relicMult formula
 
 // --- Sprites (Kenney "Tiny Dungeon" / "Tiny Creatures", CC0) ---
 ctx.imageSmoothingEnabled = false;
@@ -41,8 +42,9 @@ function loadSprite(src) {
   return img;
 }
 const SPRITES = {
-  playerMe: loadSprite('/assets/player-me.png'),
-  playerOther: loadSprite('/assets/player-other.png'),
+  class_warrior: loadSprite('/assets/player-warrior.png'),
+  class_archer: loadSprite('/assets/player-archer.png'),
+  class_mage: loadSprite('/assets/player-mage.png'),
   wolf: loadSprite('/assets/enemy-wolf.png'),
   skeleton: loadSprite('/assets/enemy-skeleton.png'),
   draugr: loadSprite('/assets/enemy-elite.png'),
@@ -131,6 +133,13 @@ muteBtn.addEventListener('click', () => {
   updateMuteBtn();
 });
 
+const exitBtn = document.getElementById('exitBtn');
+exitBtn.addEventListener('click', () => {
+  if (confirm(t('confirmExit'))) {
+    location.reload();
+  }
+});
+
 // --- Language ---
 const TRANSLATIONS = {
   th: {
@@ -173,9 +182,10 @@ const TRANSLATIONS = {
     achEvolved: '🏅 วิวัฒน์อาวุธสำเร็จ!',
     relicFound: (n) => `🏺 พบเรลิก! (สะสมแล้ว ${n} ชิ้น — เสริมพลังตอนเริ่มเกมครั้งต่อไป)`,
     weaponEvolved: '✨ อาวุธของคุณวิวัฒน์แล้ว! ดาเมจแรงขึ้นและทะลุศัตรูได้',
-    relicLabel: (n) => `🏺 เรลิกที่สะสม: ${n}`,
+    relicLabel: (n, pct) => `🏺 เรลิกที่สะสม: ${n} (โบนัสสเตตัส +${pct}% ตอนเริ่มเกม)`,
     treasureLabel: 'ปกป้องสมบัติ!',
     reviveLabel: 'กำลังปลุก...',
+    confirmExit: 'ต้องการออกจากเกมตอนนี้เลยไหม? ความคืบหน้ารอบนี้จะหายไป',
     classLabel: 'อาชีพ:',
     classWarrior: '🛡️ นักรบ',
     classArcher: '🏹 นักธนู',
@@ -247,9 +257,10 @@ const TRANSLATIONS = {
     achEvolved: '🏅 Evolved your weapon!',
     relicFound: (n) => `🏺 Relic found! (${n} collected — boosts your next run)`,
     weaponEvolved: '✨ Your weapon has evolved! More damage and it pierces enemies now',
-    relicLabel: (n) => `🏺 Relics collected: ${n}`,
+    relicLabel: (n, pct) => `🏺 Relics collected: ${n} (+${pct}% stat bonus at game start)`,
     treasureLabel: 'Defend the treasure!',
     reviveLabel: 'Reviving...',
+    confirmExit: 'Leave the game now? Your progress this run will be lost.',
     classLabel: 'Class:',
     classWarrior: '🛡️ Warrior',
     classArcher: '🏹 Archer',
@@ -287,11 +298,17 @@ const UPGRADE_TEXT = {
     damage: '⚔️ เพิ่มดาเมจ', atkspeed: '⚡ โจมตีเร็วขึ้น', speed: '👟 เคลื่อนไหวขึ้น',
     hp: '❤️ เลือดสูงสุดเพิ่ม', range: '🏹 ระยะโจมไกลขึ้น', multishot: '🌀 ยิงหลายทิศทาง',
     regen: '🌿 ฟื้นฟูเลือด', magnet: '🧲 ดูดพลังไกลขึ้น',
+    lightning: '⚡ พลังสายฟ้า (ฟาดศัตรูใกล้เคียงเป็นระยะ)',
+    fireaura: '🔥 วงแหวนไฟ (เผาศัตรูรอบตัวตลอดเวลา)',
+    frostnova: '❄️ คลื่นน้ำแข็ง (ระเบิดน้ำแข็งช้าศัตรูเป็นระยะ)',
   },
   en: {
     damage: '⚔️ Increase Damage', atkspeed: '⚡ Faster Attack', speed: '👟 Move Faster',
     hp: '❤️ More Max HP', range: '🏹 Longer Range', multishot: '🌀 Multi-shot',
     regen: '🌿 HP Regen', magnet: '🧲 Bigger Pickup Range',
+    lightning: '⚡ Lightning Power (periodically strikes nearby foes)',
+    fireaura: '🔥 Fire Aura (burns enemies around you constantly)',
+    frostnova: '❄️ Frost Nova (periodic ice burst that slows enemies)',
   },
 };
 let lang = localStorage.getItem('vs_lang') || 'th';
@@ -380,7 +397,11 @@ function enterWaitingRoom(roomId) {
   roomCodeEl.textContent = roomId;
   const url = `${location.origin}${location.pathname}?room=${roomId}`;
   shareLink.value = url;
-  document.getElementById('relicDisplay').textContent = t('relicLabel', relicCount);
+  // setRelics on 'connect' fires before a room exists server-side and gets silently
+  // dropped there — send it again now that we're actually in a room, so relics
+  // collected in past runs correctly apply their stat bonus at game start.
+  socket.emit('setRelics', relicCount);
+  document.getElementById('relicDisplay').textContent = t('relicLabel', relicCount, relicBonusPercent());
 }
 
 document.getElementById('copyBtn').addEventListener('click', () => {
@@ -512,10 +533,13 @@ let damageFlash = 0;
 // --- Class skill effects ---
 let skillEffects = [];
 socket.on('skillEffect', (fx) => {
-  skillEffects.push({ ...fx, maxLife: 0.5, startedAt: performance.now() });
-  const color = fx.type === 'bash' ? '#ff8040' : fx.type === 'heal' ? '#7ae08a' : '#7ad4f0';
+  skillEffects.push({ ...fx, maxLife: fx.type === 'lightning' ? 0.3 : 0.5, startedAt: performance.now() });
+  const color = fx.type === 'bash' ? '#ff8040' : fx.type === 'heal' ? '#7ae08a' : fx.type === 'lightning' ? '#f0e060' : fx.type === 'frostnova' ? '#a0e0f0' : '#7ad4f0';
   spawnParticles(fx.x, fx.y, color, 14, 160, 0.4);
-  if (fx.type === 'bash') triggerShake(6, 0.15);
+  if (fx.type === 'lightning') {
+    for (const target of (fx.targets || [])) spawnParticles(target.x, target.y, '#f0e060', 8, 140, 0.3);
+  }
+  if (fx.type === 'bash' || fx.type === 'frostnova') triggerShake(6, 0.15);
 });
 function renderSkillEffects(cam, now) {
   skillEffects = skillEffects.filter((fx) => {
@@ -542,6 +566,30 @@ function renderSkillEffects(cam, now) {
       ctx.strokeStyle = '#4caf50';
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 200) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'lightning') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#f0e060';
+      ctx.lineWidth = 2;
+      ctx.shadowColor = '#f0e060';
+      ctx.shadowBlur = 10;
+      for (const target of (fx.targets || [])) {
+        const ts = worldToScreen(target.x, target.y, cam);
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y);
+        // a jagged mid-point makes the bolt read as lightning instead of a straight laser
+        ctx.lineTo((s.x + ts.x) / 2 + (Math.random() - 0.5) * 20, (s.y + ts.y) / 2 + (Math.random() - 0.5) * 20);
+        ctx.lineTo(ts.x, ts.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (fx.type === 'frostnova') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#a0e0f0';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 120) * progress, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
     return true;
@@ -603,6 +651,7 @@ socket.on('state', (state) => {
     roomStarted = true;
     waitingRoom.classList.add('hidden');
     gameScreen.classList.remove('hidden');
+    exitBtn.classList.remove('hidden');
   }
   playerCount.textContent = t('playerCount', state.players.length);
   if (roomStarted) {
@@ -1182,6 +1231,19 @@ function render() {
       ctx.restore();
     }
 
+    if (p.alive && p.fireAuraLevel > 0) {
+      const auraR = 70 + p.fireAuraLevel * 15;
+      ctx.save();
+      ctx.globalAlpha = 0.22 + 0.06 * Math.sin(now / 180);
+      ctx.fillStyle = '#f08040';
+      ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = '#f0a050';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.save();
     if (p.id === myId) {
       ctx.shadowColor = '#d4af37';
@@ -1191,7 +1253,7 @@ function render() {
       ctx.shadowColor = '#c060e0';
       ctx.shadowBlur = 16;
     }
-    drawSprite(p.id === myId ? SPRITES.playerMe : SPRITES.playerOther, s.x, s.y, 34, {
+    drawSprite(SPRITES['class_' + (p.playerClass || 'warrior')] || SPRITES.class_warrior, s.x, s.y, 34, {
       flip: facing, alpha: p.alive ? 1 : 0.3,
       scaleX: 1 - walk * 0.07, scaleY: 1 + walk * 0.07,
     });

@@ -50,6 +50,9 @@ const UPGRADES = [
   { id: 'multishot', label: '🌀 ยิงหลายทิศทาง', apply: (p) => { p.projectileCount += 1; } },
   { id: 'regen', label: '🌿 ฟื้นฟูเลือด', apply: (p) => { p.regen += 0.5; } },
   { id: 'magnet', label: '🧲 ดูดพลังไกลขึ้น', apply: (p) => { p.pickupRadius += 35; } },
+  { id: 'lightning', label: '⚡ พลังสายฟ้า', apply: (p) => { p.lightningLevel = (p.lightningLevel || 0) + 1; } },
+  { id: 'fireaura', label: '🔥 วงแหวนไฟ', apply: (p) => { p.fireAuraLevel = (p.fireAuraLevel || 0) + 1; } },
+  { id: 'frostnova', label: '❄️ คลื่นน้ำแข็ง', apply: (p) => { p.frostNovaLevel = (p.frostNovaLevel || 0) + 1; } },
 ];
 
 const DIFFICULTY = {
@@ -137,6 +140,11 @@ function makePlayer(id, name) {
     synergyActive: false,
     speedBoostUntil: 0,
     damageBoostUntil: 0,
+    lightningLevel: 0,
+    lightningCooldown: 0,
+    fireAuraLevel: 0,
+    frostNovaLevel: 0,
+    frostNovaCooldown: 0,
   };
 }
 
@@ -194,6 +202,12 @@ function pickEnemyType() {
   return 'wolf';
 }
 
+// Distinct attack profiles per enemy type instead of one flat damage number for everything —
+// wolves are fast but hit soft, skeletons hit hard and slow, exploders barely melee (their
+// real damage is the death burst), casters/draugr/worldboss keep their existing multipliers.
+const ENEMY_DAMAGE_MULT = { wolf: 0.75, skeleton: 1.3, caster: 0.9, exploder: 0.5, draugr: 1, worldboss: 1 };
+const ENEMY_SPEED_MULT = { wolf: 1.15, skeleton: 0.9, caster: 1, exploder: 1, draugr: 1, worldboss: 1 };
+
 // After ENDLESS_THRESHOLD, difficulty growth accelerates so the run never truly plateaus.
 function effectiveMinute(room) {
   const minute = room.elapsed / 60;
@@ -227,12 +241,12 @@ function spawnEnemy(room, opts = {}) {
   const eliteMult = isWorldBoss ? 16 : (isElite ? 4 : 1);
   const night = isNight(room);
   const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * mod.enemyHpMult * eliteMult * (night ? 1.15 : 1));
-  const speed = (60 + Math.random() * 20 + minute * 2) * (isElite || isWorldBoss ? 0.75 : 1) * mod.enemySpeedMult;
+  const speed = (60 + Math.random() * 20 + minute * 2) * (isElite || isWorldBoss ? 0.75 : 1) * mod.enemySpeedMult * (ENEMY_SPEED_MULT[type] || 1);
   const enemy = {
     id: room.nextEnemyId++,
     x, y, hp, maxHp: hp,
     speed,
-    damage: Math.round((4 + minute * 1.5) * diff.damage * (isWorldBoss ? 3 : (isElite ? 2 : 1)) * (night ? 1.1 : 1)),
+    damage: Math.round((4 + minute * 1.5) * diff.damage * (isWorldBoss ? 3 : (isElite ? 2 : 1)) * (night ? 1.1 : 1) * (ENEMY_DAMAGE_MULT[type] || 1)),
     elite: isElite || isWorldBoss,
     worldBoss: isWorldBoss,
     name: (isElite || isWorldBoss) ? nextBossName(isWorldBoss) : null,
@@ -434,6 +448,51 @@ function tickRoom(room) {
     }
   }
 
+  // elemental powers: passive AoE abilities picked up as level-up upgrades, separate from
+  // the player's main weapon attack (lightning bolts, a burning aura, a slowing frost pulse)
+  for (const p of alivePlayers) {
+    if (p.lightningLevel > 0) {
+      p.lightningCooldown -= TICK_MS;
+      if (p.lightningCooldown <= 0) {
+        p.lightningCooldown = Math.max(800, 2600 - p.lightningLevel * 200);
+        const targets = room.enemies
+          .map((e) => ({ e, d: distance(p.x, p.y, e.x, e.y) }))
+          .filter((t) => t.d < 320)
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 1 + p.lightningLevel);
+        if (targets.length > 0) {
+          const dmg = Math.round(p.damage * 0.8 * p.lightningLevel);
+          for (const t of targets) t.e.hp -= dmg;
+          io.to(room.id).emit('skillEffect', { type: 'lightning', x: p.x, y: p.y, targets: targets.map((t) => ({ x: t.e.x, y: t.e.y })) });
+        }
+      }
+    }
+    if (p.fireAuraLevel > 0) {
+      const radius = 70 + p.fireAuraLevel * 15;
+      const dps = 3 + p.fireAuraLevel * 2;
+      for (const e of room.enemies) {
+        if (distance(p.x, p.y, e.x, e.y) < radius) e.hp -= dps * dt;
+      }
+    }
+    if (p.frostNovaLevel > 0) {
+      p.frostNovaCooldown -= TICK_MS;
+      if (p.frostNovaCooldown <= 0) {
+        p.frostNovaCooldown = Math.max(2000, 4500 - p.frostNovaLevel * 300);
+        const radius = 120 + p.frostNovaLevel * 20;
+        const dmg = Math.round(p.damage * 0.6 * p.frostNovaLevel);
+        let hit = false;
+        for (const e of room.enemies) {
+          if (distance(p.x, p.y, e.x, e.y) < radius) {
+            e.hp -= dmg;
+            e.slowUntil = room.elapsed + 2.5;
+            hit = true;
+          }
+        }
+        if (hit) io.to(room.id).emit('skillEffect', { type: 'frostnova', x: p.x, y: p.y, radius });
+      }
+    }
+  }
+
   // move enemies toward nearest player (casters keep their distance and shoot instead of meleeing)
   for (const e of room.enemies) {
     let nearest = null;
@@ -446,15 +505,17 @@ function tickRoom(room) {
     const dx = nearest.x - e.x;
     const dy = nearest.y - e.y;
     const len = Math.hypot(dx, dy) || 1;
+    const slowMult = (e.slowUntil && room.elapsed < e.slowUntil) ? 0.4 : 1;
+    const eSpeed = e.speed * slowMult;
 
     if (e.type === 'caster') {
       const preferredRange = 190;
       if (best > preferredRange + 20) {
-        e.x += (dx / len) * e.speed * dt;
-        e.y += (dy / len) * e.speed * dt;
+        e.x += (dx / len) * eSpeed * dt;
+        e.y += (dy / len) * eSpeed * dt;
       } else if (best < preferredRange - 20) {
-        e.x -= (dx / len) * e.speed * dt * 0.6;
-        e.y -= (dy / len) * e.speed * dt * 0.6;
+        e.x -= (dx / len) * eSpeed * dt * 0.6;
+        e.y -= (dy / len) * eSpeed * dt * 0.6;
       }
       e.attackCooldown -= TICK_MS;
       if (e.attackCooldown <= 0 && best <= preferredRange + 40) {
@@ -469,8 +530,8 @@ function tickRoom(room) {
       continue;
     }
 
-    e.x += (dx / len) * e.speed * dt;
-    e.y += (dy / len) * e.speed * dt;
+    e.x += (dx / len) * eSpeed * dt;
+    e.y += (dy / len) * eSpeed * dt;
     if (best < PLAYER_RADIUS + ENEMY_RADIUS && nearest.invuln <= 0) {
       nearest.hp -= e.damage;
       nearest.invuln = 0.6;
@@ -651,6 +712,7 @@ function serializeRoom(room) {
       skillCooldown: p.skillCooldown, skillCooldownMax: p.skillCooldownMax,
       evolved: p.evolved, reviveProgress: p.reviveProgress, synergyActive: p.synergyActive,
       speedBoostActive: room.elapsed < p.speedBoostUntil, damageBoostActive: room.elapsed < p.damageBoostUntil,
+      fireAuraLevel: p.fireAuraLevel,
     })),
     enemies: room.enemies.map((e) => ({
       id: e.id, x: e.x, y: e.y, hp: e.hp, maxHp: e.maxHp, type: e.type, elite: e.elite, worldBoss: e.worldBoss, name: e.name,
