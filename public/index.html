@@ -8,32 +8,45 @@
 </head>
 <body>
 
+<div id="topControls">
+  <button id="muteBtn" title="Mute">🔊</button>
+  <button id="langBtn" title="Language">EN</button>
+</div>
+
 <div id="lobby" class="screen">
   <h1>⚔️ Valhalla Survivors</h1>
-  <p class="subtitle">รอดชีวิตจากกองทัพดราวเกอร์ให้นานที่สุด ร่วมมือกับเพื่อน!</p>
-  <input id="nameInput" placeholder="ชื่อของคุณ (นักรบไวกิ้ง)" maxlength="16" />
+  <p class="subtitle" data-i18n="subtitle">รอดชีวิตจากกองทัพดราวเกอร์ให้นานที่สุด ร่วมมือกับเพื่อน!</p>
+  <input id="nameInput" data-i18n-placeholder="namePlaceholder" placeholder="ชื่อของคุณ (นักรบไวกิ้ง)" maxlength="16" />
 
   <div class="row">
-    <button id="createBtn">สร้างห้องใหม่</button>
+    <button id="createBtn" data-i18n="createRoom">สร้างห้องใหม่</button>
   </div>
 
   <div class="row">
-    <input id="roomInput" placeholder="รหัสห้อง" maxlength="6" style="text-transform:uppercase" />
-    <button id="joinBtn">เข้าร่วมห้อง</button>
+    <input id="roomInput" data-i18n-placeholder="roomCodePlaceholder" placeholder="รหัสห้อง" maxlength="6" style="text-transform:uppercase" />
+    <button id="joinBtn" data-i18n="joinRoom">เข้าร่วมห้อง</button>
   </div>
 
   <p id="lobbyMsg" class="msg"></p>
 </div>
 
 <div id="waitingRoom" class="screen hidden">
-  <h2>ห้อง: <span id="roomCode"></span></h2>
-  <p>ส่งลิงก์นี้ให้เพื่อน:</p>
+  <h2><span data-i18n="roomLabel">ห้อง:</span> <span id="roomCode"></span></h2>
+  <p data-i18n="shareLinkLabel">ส่งลิงก์นี้ให้เพื่อน:</p>
   <div class="row">
     <input id="shareLink" readonly />
-    <button id="copyBtn">คัดลอก</button>
+    <button id="copyBtn" data-i18n="copy">คัดลอก</button>
   </div>
+
+  <div class="difficulty-row" id="difficultyRow">
+    <span data-i18n="difficultyLabel">ระดับความยาก:</span>
+    <label><input type="radio" name="difficulty" value="easy" /> <span data-i18n="diffEasy">ง่าย</span></label>
+    <label><input type="radio" name="difficulty" value="normal" checked /> <span data-i18n="diffNormal">ปกติ</span></label>
+    <label><input type="radio" name="difficulty" value="hard" /> <span data-i18n="diffHard">ยาก</span></label>
+  </div>
+
   <p id="playerCount"></p>
-  <button id="startBtn">เริ่มเกม ⚔️</button>
+  <button id="startBtn" data-i18n="startGame">เริ่มเกม ⚔️</button>
 </div>
 
 <div id="gameScreen" class="screen hidden">
@@ -42,17 +55,18 @@
     <div id="timer">00:00</div>
     <div id="statsPanel"></div>
   </div>
+  <canvas id="minimap" width="140" height="140"></canvas>
   <div id="upgradeOverlay" class="hidden">
-    <h2>เลือกพลังใหม่!</h2>
+    <h2 data-i18n="chooseUpgrade">เลือกพลังใหม่!</h2>
     <div id="upgradeChoices"></div>
   </div>
   <div id="touchJoystick" class="hidden">
     <div id="joystickBase"><div id="joystickKnob"></div></div>
   </div>
   <div id="gameOverOverlay" class="hidden">
-    <h2>เกมจบแล้ว</h2>
+    <h2 data-i18n="gameOverTitle">เกมจบแล้ว</h2>
     <p id="gameOverStats"></p>
-    <button onclick="location.reload()">เล่นอีกครั้ง</button>
+    <button id="playAgainBtn" data-i18n="playAgain">เล่นอีกครั้ง</button>
   </div>
 </div>
 

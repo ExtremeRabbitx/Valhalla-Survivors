@@ -39,6 +39,42 @@ const SPRITES = {
   gem: loadSprite('/assets/xp-gem.png'),
 };
 const TILESET = loadSprite('/assets/tileset.png');
+const WORLD_SIZE = 2000; // must match server.js WORLD_W/WORLD_H
+
+const minimapCanvas = document.getElementById('minimap');
+const minimapCtx = minimapCanvas.getContext('2d');
+function renderMinimap() {
+  if (!latestState) return;
+  const size = minimapCanvas.width;
+  const scale = size / WORLD_SIZE;
+  minimapCtx.clearRect(0, 0, size, size);
+  minimapCtx.save();
+  minimapCtx.beginPath();
+  minimapCtx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+  minimapCtx.clip();
+  minimapCtx.fillStyle = 'rgba(20,40,20,0.5)';
+  minimapCtx.fillRect(0, 0, size, size);
+
+  // altar landmark at world center
+  minimapCtx.fillStyle = 'rgba(212,175,55,0.6)';
+  minimapCtx.beginPath();
+  minimapCtx.arc((WORLD_SIZE / 2) * scale, (WORLD_SIZE / 2) * scale, 3, 0, Math.PI * 2);
+  minimapCtx.fill();
+
+  for (const e of latestState.enemies) {
+    minimapCtx.fillStyle = e.elite ? '#ff4040' : '#e06060';
+    minimapCtx.beginPath();
+    minimapCtx.arc(e.x * scale, e.y * scale, e.elite ? 3 : 1.5, 0, Math.PI * 2);
+    minimapCtx.fill();
+  }
+  for (const p of latestState.players) {
+    minimapCtx.fillStyle = p.id === myId ? '#f0d060' : '#7ad4f0';
+    minimapCtx.beginPath();
+    minimapCtx.arc(p.x * scale, p.y * scale, 3, 0, Math.PI * 2);
+    minimapCtx.fill();
+  }
+  minimapCtx.restore();
+}
 
 // --- Sound effects (Kenney "RPG Audio" / "Impact Sounds" / "Interface Sounds", CC0) ---
 const SFX = {
@@ -50,9 +86,10 @@ const SFX = {
   click: '/assets/sfx/click.ogg',
   gameover: '/assets/sfx/gameover.ogg',
 };
-const sfxPool = {};
 let sfxLastPlayed = {};
+let muted = localStorage.getItem('vs_muted') === '1';
 function playSfx(name, { volume = 0.5, throttleMs = 0 } = {}) {
+  if (muted) return;
   const now = performance.now();
   if (throttleMs && sfxLastPlayed[name] && now - sfxLastPlayed[name] < throttleMs) return;
   sfxLastPlayed[name] = now;
@@ -60,6 +97,105 @@ function playSfx(name, { volume = 0.5, throttleMs = 0 } = {}) {
   audio.volume = volume;
   audio.play().catch(() => {});
 }
+
+const muteBtn = document.getElementById('muteBtn');
+function updateMuteBtn() { muteBtn.textContent = muted ? '🔇' : '🔊'; }
+updateMuteBtn();
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  localStorage.setItem('vs_muted', muted ? '1' : '0');
+  updateMuteBtn();
+});
+
+// --- Language ---
+const TRANSLATIONS = {
+  th: {
+    subtitle: 'รอดชีวิตจากกองทัพดราวเกอร์ให้นานที่สุด ร่วมมือกับเพื่อน!',
+    namePlaceholder: 'ชื่อของคุณ (นักรบไวกิ้ง)',
+    createRoom: 'สร้างห้องใหม่',
+    roomCodePlaceholder: 'รหัสห้อง',
+    joinRoom: 'เข้าร่วมห้อง',
+    roomLabel: 'ห้อง:',
+    shareLinkLabel: 'ส่งลิงก์นี้ให้เพื่อน:',
+    copy: 'คัดลอก',
+    difficultyLabel: 'ระดับความยาก:',
+    diffEasy: 'ง่าย',
+    diffNormal: 'ปกติ',
+    diffHard: 'ยาก',
+    startGame: 'เริ่มเกม ⚔️',
+    chooseUpgrade: 'เลือกพลังใหม่!',
+    gameOverTitle: 'เกมจบแล้ว',
+    playAgain: 'เล่นอีกครั้ง',
+    playerCount: (n) => `ผู้เล่นในห้อง: ${n}`,
+    defaultName: 'นักรบไร้นาม',
+    enterRoomCode: 'กรอกรหัสห้องก่อน',
+    roomNotFound: 'ไม่พบห้องนี้',
+    alreadyStarted: 'เกมเริ่มไปแล้ว',
+    survived: (t) => `รอดชีวิต ${t}`,
+    levelKills: (name, lvl, kills) => `${name}: เลเวล ${lvl}, ฆ่า ${kills} ตัว`,
+    you: ' (คุณ)',
+  },
+  en: {
+    subtitle: 'Survive the draugr horde as long as you can. Team up with friends!',
+    namePlaceholder: 'Your name (Viking warrior)',
+    createRoom: 'Create Room',
+    roomCodePlaceholder: 'Room Code',
+    joinRoom: 'Join Room',
+    roomLabel: 'Room:',
+    shareLinkLabel: 'Send this link to your friend:',
+    copy: 'Copy',
+    difficultyLabel: 'Difficulty:',
+    diffEasy: 'Easy',
+    diffNormal: 'Normal',
+    diffHard: 'Hard',
+    startGame: 'Start Game ⚔️',
+    chooseUpgrade: 'Choose a new power!',
+    gameOverTitle: 'Game Over',
+    playAgain: 'Play Again',
+    playerCount: (n) => `Players in room: ${n}`,
+    defaultName: 'Unnamed Warrior',
+    enterRoomCode: 'Enter a room code first',
+    roomNotFound: 'Room not found',
+    alreadyStarted: 'Game already started',
+    survived: (t) => `Survived ${t}`,
+    levelKills: (name, lvl, kills) => `${name}: Level ${lvl}, ${kills} kills`,
+    you: ' (you)',
+  },
+};
+const UPGRADE_TEXT = {
+  th: {
+    damage: '⚔️ เพิ่มดาเมจ', atkspeed: '⚡ โจมตีเร็วขึ้น', speed: '👟 เคลื่อนไหวขึ้น',
+    hp: '❤️ เลือดสูงสุดเพิ่ม', range: '🏹 ระยะโจมไกลขึ้น', multishot: '🌀 ยิงหลายทิศทาง',
+    regen: '🌿 ฟื้นฟูเลือด', magnet: '🧲 ดูดพลังไกลขึ้น',
+  },
+  en: {
+    damage: '⚔️ Increase Damage', atkspeed: '⚡ Faster Attack', speed: '👟 Move Faster',
+    hp: '❤️ More Max HP', range: '🏹 Longer Range', multishot: '🌀 Multi-shot',
+    regen: '🌿 HP Regen', magnet: '🧲 Bigger Pickup Range',
+  },
+};
+let lang = localStorage.getItem('vs_lang') || 'th';
+function t(key, ...args) {
+  const v = TRANSLATIONS[lang][key];
+  return typeof v === 'function' ? v(...args) : v;
+}
+function applyTranslations() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  langBtn.textContent = lang === 'th' ? 'EN' : 'TH';
+}
+const langBtn = document.getElementById('langBtn');
+langBtn.addEventListener('click', () => {
+  lang = lang === 'th' ? 'en' : 'th';
+  localStorage.setItem('vs_lang', lang);
+  applyTranslations();
+});
+applyTranslations();
 
 function resizeCanvas() {
   canvas.width = window.innerWidth;
@@ -77,7 +213,7 @@ if (prefillRoom) roomInput.value = prefillRoom.toUpperCase();
 
 document.getElementById('createBtn').addEventListener('click', () => {
   playSfx('click', { volume: 0.4 });
-  const name = nameInput.value.trim() || 'นักรบไร้นาม';
+  const name = nameInput.value.trim() || t('defaultName');
   socket.emit('createRoom', name, (res) => {
     enterWaitingRoom(res.roomId);
   });
@@ -85,11 +221,11 @@ document.getElementById('createBtn').addEventListener('click', () => {
 
 document.getElementById('joinBtn').addEventListener('click', () => {
   playSfx('click', { volume: 0.4 });
-  const name = nameInput.value.trim() || 'นักรบไร้นาม';
+  const name = nameInput.value.trim() || t('defaultName');
   const code = roomInput.value.trim().toUpperCase();
-  if (!code) { lobbyMsg.textContent = 'กรอกรหัสห้องก่อน'; return; }
+  if (!code) { lobbyMsg.textContent = t('enterRoomCode'); return; }
   socket.emit('joinRoom', code, name, (res) => {
-    if (res.error) { lobbyMsg.textContent = res.error; return; }
+    if (res.error) { lobbyMsg.textContent = t(res.error); return; }
     enterWaitingRoom(res.roomId);
   });
 });
@@ -107,14 +243,26 @@ document.getElementById('copyBtn').addEventListener('click', () => {
   navigator.clipboard.writeText(shareLink.value);
 });
 
+document.getElementById('playAgainBtn').addEventListener('click', () => location.reload());
+
 document.getElementById('startBtn').addEventListener('click', () => {
   playSfx('click', { volume: 0.4 });
-  socket.emit('startGame');
+  const difficulty = document.querySelector('input[name="difficulty"]:checked').value;
+  socket.emit('startGame', difficulty);
 });
 
 // --- Particles & juice ---
 let particles = [];
 let levelBursts = [];
+let damageNumbers = [];
+
+function spawnDamageNumber(x, y, amount, color, big) {
+  damageNumbers.push({
+    x, y: y - 14, amount: Math.round(amount), color, big,
+    life: 0.7, maxLife: 0.7,
+    vx: (Math.random() - 0.5) * 20,
+  });
+}
 const hitFlashes = new Map(); // enemyId -> timestamp
 const playerFacing = new Map(); // playerId -> 1 (right) | -1 (left)
 const playerMoving = new Map(); // playerId -> timestamp of last detected movement
@@ -162,7 +310,7 @@ socket.on('state', (state) => {
     waitingRoom.classList.add('hidden');
     gameScreen.classList.remove('hidden');
   }
-  playerCount.textContent = `ผู้เล่นในห้อง: ${state.players.length}`;
+  playerCount.textContent = t('playerCount', state.players.length);
   if (roomStarted) updateHud(state);
   if (state.gameOver) showGameOver(state);
 });
@@ -183,6 +331,7 @@ function diffEffects(oldState, newState) {
     if (old && e.hp < old.hp) {
       hitFlashes.set(e.id, performance.now());
       spawnParticles(e.x, e.y, '#ffe08a', 3, 80, 0.25);
+      spawnDamageNumber(e.x, e.y, old.hp - e.hp, '#f0d060', e.elite);
       playSfx('hit', { volume: 0.2, throttleMs: 60 });
     }
   }
@@ -191,6 +340,7 @@ function diffEffects(oldState, newState) {
     const old = oldPlayers.get(p.id);
     if (old && p.hp < old.hp) {
       spawnParticles(p.x, p.y, '#e06060', 6, 100, 0.3);
+      spawnDamageNumber(p.x, p.y, old.hp - p.hp, '#e06060', false);
       if (p.id === myId) {
         triggerShake(8, 0.25);
         damageFlash = 0.35;
@@ -322,6 +472,12 @@ function updateParticles(dt) {
     b.life -= dt;
     return b.life > 0;
   });
+  damageNumbers = damageNumbers.filter((d) => {
+    d.life -= dt;
+    d.y -= 35 * dt;
+    d.x += d.vx * dt;
+    return d.life > 0;
+  });
 }
 
 function drawEmbers(dt) {
@@ -391,6 +547,30 @@ function drawNature(cam) {
       }
     }
   }
+}
+
+function drawAltar(cam, t) {
+  const wx = WORLD_SIZE / 2, wy = WORLD_SIZE / 2;
+  const s = worldToScreen(wx, wy, cam);
+  if (s.x < -150 || s.x > canvas.width + 150 || s.y < -150 || s.y > canvas.height + 150) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(s.x, s.y + 12, 70, 22, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#454b58';
+  ctx.beginPath(); ctx.ellipse(s.x, s.y, 66, 40, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#5c6272';
+  ctx.beginPath(); ctx.ellipse(s.x, s.y - 6, 48, 28, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#3a3f4c';
+  ctx.beginPath(); ctx.ellipse(s.x, s.y - 8, 26, 15, 0, 0, Math.PI * 2); ctx.fill();
+  const glow = 0.5 + 0.35 * Math.sin(t / 400);
+  ctx.shadowColor = '#d4af37';
+  ctx.shadowBlur = 18;
+  ctx.fillStyle = `rgba(212,175,55,${glow})`;
+  ctx.font = 'bold 30px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('ᛟ', s.x, s.y - 8);
+  ctx.restore();
 }
 
 function drawBackground(cam, t) {
@@ -468,6 +648,7 @@ function render() {
 
   drawBackground(cam, now);
   drawNature(cam);
+  drawAltar(cam, now);
   drawEmbers(dt);
 
   // warm light pooling under each living player
@@ -594,10 +775,28 @@ function render() {
     ctx.restore();
   }
 
+  // floating damage numbers
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const d of damageNumbers) {
+    const s = worldToScreen(d.x, d.y, cam);
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, d.life / d.maxLife * 1.4);
+    ctx.font = d.big ? 'bold 20px Georgia' : 'bold 14px Georgia';
+    ctx.fillStyle = d.color;
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(String(d.amount), s.x, s.y);
+    ctx.fillText(String(d.amount), s.x, s.y);
+    ctx.restore();
+  }
+
   if (damageFlash > 0) {
     ctx.fillStyle = `rgba(180,20,20,${damageFlash * 0.4})`;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
+
+  renderMinimap();
 }
 render();
 
@@ -611,7 +810,7 @@ function updateHud(state) {
   timerEl.textContent = formatTime(state.elapsed);
   statsPanel.innerHTML = state.players.map((p) => `
     <div class="pstat">
-      <strong>${p.name}${p.id === myId ? ' (คุณ)' : ''}</strong> — Lv.${p.level} ${p.alive ? '' : '💀'}
+      <strong>${p.name}${p.id === myId ? t('you') : ''}</strong> — Lv.${p.level} ${p.alive ? '' : '💀'}
       <div class="bar"><div class="bar-fill" style="width:${Math.max(0, (p.hp / p.maxHp) * 100)}%"></div></div>
       <div class="bar"><div class="bar-fill xp-fill" style="width:${(p.xp / p.xpNeeded) * 100}%"></div></div>
     </div>
@@ -627,7 +826,7 @@ function updateHud(state) {
       for (const u of me.pendingLevelUp) {
         const card = document.createElement('div');
         card.className = 'upgrade-card';
-        card.textContent = u.label;
+        card.textContent = UPGRADE_TEXT[lang][u.id] || u.label;
         card.addEventListener('click', () => {
           playSfx('click', { volume: 0.4 });
           socket.emit('chooseUpgrade', u.id);
@@ -648,6 +847,6 @@ function showGameOver(state) {
   if (!gameOverOverlay.classList.contains('hidden')) return;
   gameOverOverlay.classList.remove('hidden');
   playSfx('gameover', { volume: 0.5 });
-  gameOverStats.innerHTML = `รอดชีวิต ${formatTime(state.elapsed)}<br/>` +
-    state.players.map((p) => `${p.name}: เลเวล ${p.level}, ฆ่า ${p.kills} ตัว`).join('<br/>');
+  gameOverStats.innerHTML = t('survived', formatTime(state.elapsed)) + '<br/>' +
+    state.players.map((p) => t('levelKills', p.name, p.level, p.kills)).join('<br/>');
 }

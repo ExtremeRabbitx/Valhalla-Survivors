@@ -28,6 +28,12 @@ const UPGRADES = [
   { id: 'magnet', label: '🧲 ดูดพลังไกลขึ้น', apply: (p) => { p.pickupRadius += 35; } },
 ];
 
+const DIFFICULTY = {
+  easy: { hp: 0.7, damage: 0.65, spawn: 0.8 },
+  normal: { hp: 1, damage: 1, spawn: 1 },
+  hard: { hp: 1.45, damage: 1.35, spawn: 1.3 },
+};
+
 function randomUpgrades() {
   const shuffled = [...UPGRADES].sort(() => Math.random() - 0.5);
   return shuffled.slice(0, 3).map((u) => ({ id: u.id, label: u.label }));
@@ -76,6 +82,7 @@ function createRoom() {
     orbs: [],
     started: false,
     gameOver: false,
+    difficulty: 'normal',
     elapsed: 0,
     spawnTimer: 0,
     nextEnemyId: 1,
@@ -95,17 +102,18 @@ function spawnEnemy(room) {
   const x = Math.max(20, Math.min(WORLD_W - 20, target.x + Math.cos(angle) * dist));
   const y = Math.max(20, Math.min(WORLD_H - 20, target.y + Math.sin(angle) * dist));
   const minute = room.elapsed / 60;
+  const diff = DIFFICULTY[room.difficulty] || DIFFICULTY.normal;
   // Co-op scaling: more players alive => enemies tankier so the fight stays a real fight,
   // but not linearly, so a duo isn't punished as hard as raw player-count math would suggest.
   const coopScale = 1 + 0.35 * (players.length - 1);
   const isElite = Math.random() < Math.min(0.15, minute * 0.03);
-  const hp = Math.round((15 + minute * 8) * coopScale * (isElite ? 4 : 1));
+  const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * (isElite ? 4 : 1));
   const speed = (60 + Math.random() * 20 + minute * 2) * (isElite ? 0.8 : 1);
   room.enemies.push({
     id: room.nextEnemyId++,
     x, y, hp, maxHp: hp,
     speed,
-    damage: Math.round((4 + minute * 1.5) * (isElite ? 2 : 1)),
+    damage: Math.round((4 + minute * 1.5) * diff.damage * (isElite ? 2 : 1)),
     elite: isElite,
     name: isElite ? nextBossName() : null,
     type: isElite ? 'draugr' : (Math.random() < 0.5 ? 'wolf' : 'skeleton'),
@@ -136,7 +144,8 @@ function tickRoom(room) {
 
   // spawn waves — more players alive means enemies spawn faster (sqrt curve keeps duo play fair)
   const minute = room.elapsed / 60;
-  const baseInterval = Math.max(0.4, 1.8 - minute * 0.14);
+  const diff = DIFFICULTY[room.difficulty] || DIFFICULTY.normal;
+  const baseInterval = Math.max(0.4, 1.8 - minute * 0.14) / diff.spawn;
   const spawnInterval = baseInterval / Math.sqrt(alivePlayers.length);
   room.spawnTimer += dt;
   while (room.spawnTimer >= spawnInterval) {
@@ -276,6 +285,7 @@ function serializeRoom(room) {
     id: room.id,
     started: room.started,
     gameOver: room.gameOver,
+    difficulty: room.difficulty,
     elapsed: room.elapsed,
     players: [...room.players.values()].map((p) => ({
       id: p.id, name: p.name, x: p.x, y: p.y, hp: p.hp, maxHp: p.maxHp,
@@ -301,17 +311,20 @@ io.on('connection', (socket) => {
 
   socket.on('joinRoom', (roomId, name, cb) => {
     const room = rooms.get((roomId || '').toUpperCase());
-    if (!room) { cb({ error: 'ไม่พบห้องนี้' }); return; }
-    if (room.started) { cb({ error: 'เกมเริ่มไปแล้ว' }); return; }
+    if (!room) { cb({ error: 'roomNotFound' }); return; }
+    if (room.started) { cb({ error: 'alreadyStarted' }); return; }
     currentRoomId = room.id;
     socket.join(room.id);
     room.players.set(socket.id, makePlayer(socket.id, name || 'Player'));
     cb({ roomId: room.id });
   });
 
-  socket.on('startGame', () => {
+  socket.on('startGame', (difficulty) => {
     const room = rooms.get(currentRoomId);
-    if (room) room.started = true;
+    if (room) {
+      room.difficulty = DIFFICULTY[difficulty] ? difficulty : 'normal';
+      room.started = true;
+    }
   });
 
   socket.on('input', ({ dx, dy }) => {
