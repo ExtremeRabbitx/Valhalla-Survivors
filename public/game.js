@@ -1234,18 +1234,28 @@ function updateHud(state) {
 
   if (state.merchant && me && me.alive && distanceClient(me.x, me.y, state.merchant.x, state.merchant.y) < 90) {
     merchantPanel.classList.remove('hidden');
-    merchantOffers.innerHTML = state.merchant.offers.map((offer, i) => {
-      if (!offer) return '';
-      const affordable = me.gold >= offer.cost;
-      return `<button class="merchant-offer" data-i="${i}" ${affordable ? '' : 'disabled'}>${t('merchantItem_' + offer.id, offer.cost)}</button>`;
-    }).join('');
-    merchantOffers.querySelectorAll('.merchant-offer').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        playSfx('click', { volume: 0.4 });
-        socket.emit('buyItem', parseInt(btn.dataset.i, 10));
+    // Rebuild the offer buttons only when their content actually changes (offers bought,
+    // or affordability flips) — rebuilding every tick would destroy the button under the
+    // cursor 20x/sec and make it nearly impossible to click, like the old upgrade-card bug.
+    const signature = state.merchant.offers
+      .map((offer) => (offer ? `${offer.id}:${offer.cost}:${me.gold >= offer.cost}` : 'none'))
+      .join(',');
+    if (merchantOffers.dataset.signature !== signature) {
+      merchantOffers.dataset.signature = signature;
+      merchantOffers.innerHTML = state.merchant.offers.map((offer, i) => {
+        if (!offer) return '';
+        const affordable = me.gold >= offer.cost;
+        return `<button class="merchant-offer" data-i="${i}" ${affordable ? '' : 'disabled'}>${t('merchantItem_' + offer.id, offer.cost)}</button>`;
+      }).join('');
+      merchantOffers.querySelectorAll('.merchant-offer').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          playSfx('click', { volume: 0.4 });
+          socket.emit('buyItem', parseInt(btn.dataset.i, 10));
+        });
       });
-    });
+    }
   } else {
+    merchantOffers.dataset.signature = '';
     merchantPanel.classList.add('hidden');
   }
 
