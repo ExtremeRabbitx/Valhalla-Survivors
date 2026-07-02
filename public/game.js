@@ -376,7 +376,7 @@ function drawNature(cam) {
   for (let col = startCol; col <= endCol; col++) {
     for (let row = startRow; row <= endRow; row++) {
       const h1 = Math.abs(Math.sin(col * 91.3 + row * 57.1) * 24634.634) % 1;
-      if (h1 > 0.5) continue; // ~half the cells get a prop
+      if (h1 > 0.62) continue; // dense forest coverage
       const wx = col * cell + ((h1 * 733) % cell);
       const wy = row * cell + ((h1 * 911) % cell);
       const s = worldToScreen(wx, wy, cam);
@@ -398,13 +398,13 @@ function drawBackground(cam, t) {
     canvas.width / 2, canvas.height / 2, 0,
     canvas.width / 2, canvas.height / 2, canvas.height
   );
-  bgGrad.addColorStop(0, '#182238');
-  bgGrad.addColorStop(0.6, '#0f1626');
-  bgGrad.addColorStop(1, '#080b13');
+  bgGrad.addColorStop(0, '#2a3f22');
+  bgGrad.addColorStop(0.6, '#1c2e18');
+  bgGrad.addColorStop(1, '#101c0d');
   ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  ctx.strokeStyle = 'rgba(74,85,120,0.22)';
+  ctx.strokeStyle = 'rgba(120,150,90,0.18)';
   ctx.lineWidth = 1;
   const gridSize = 100;
   const offX = -(cam.x % gridSize);
