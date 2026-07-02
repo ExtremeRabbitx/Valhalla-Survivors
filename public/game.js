@@ -72,9 +72,21 @@ document.getElementById('startBtn').addEventListener('click', () => {
 
 // --- Particles & juice ---
 let particles = [];
+let levelBursts = [];
 const hitFlashes = new Map(); // enemyId -> timestamp
+const playerFacing = new Map(); // playerId -> 1 (right) | -1 (left)
 let shake = { time: 0, magnitude: 0 };
 let damageFlash = 0;
+
+// ambient embers drifting upward, screen-space (purely decorative)
+const embers = Array.from({ length: 36 }, () => ({
+  x: Math.random(),
+  y: Math.random(),
+  speed: 8 + Math.random() * 14,
+  drift: (Math.random() - 0.5) * 6,
+  size: 1 + Math.random() * 2,
+  phase: Math.random() * Math.PI * 2,
+}));
 
 function spawnParticles(x, y, color, count, speed, life) {
   for (let i = 0; i < count; i++) {
@@ -139,6 +151,13 @@ function diffEffects(oldState, newState) {
         damageFlash = 0.35;
       }
     }
+    if (old && p.level > old.level) {
+      levelBursts.push({ x: p.x, y: p.y, life: 0.6, maxLife: 0.6 });
+      spawnParticles(p.x, p.y, '#f0d060', 18, 160, 0.6);
+    }
+    if (old && Math.abs(p.x - old.x) > 0.5) {
+      playerFacing.set(p.id, p.x > old.x ? 1 : -1);
+    }
   }
 }
 
@@ -187,10 +206,36 @@ function updateParticles(dt) {
     p.vy *= 0.92;
     return p.life > 0;
   });
+  levelBursts = levelBursts.filter((b) => {
+    b.life -= dt;
+    return b.life > 0;
+  });
+}
+
+function drawEmbers(dt) {
+  ctx.save();
+  for (const e of embers) {
+    e.y -= (e.speed * dt) / canvas.height;
+    e.x += (Math.sin(performance.now() / 1000 + e.phase) * e.drift * dt) / canvas.width;
+    if (e.y < -0.02) { e.y = 1.02; e.x = Math.random(); }
+    const x = e.x * canvas.width;
+    const y = e.y * canvas.height;
+    const alpha = 0.15 + 0.15 * Math.sin(performance.now() / 400 + e.phase);
+    ctx.fillStyle = `rgba(212,175,55,${Math.max(0, alpha)})`;
+    ctx.beginPath(); ctx.arc(x, y, e.size, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
 }
 
 function drawBackground(cam, t) {
-  ctx.fillStyle = '#0d1420';
+  const bgGrad = ctx.createRadialGradient(
+    canvas.width / 2, canvas.height / 2, 0,
+    canvas.width / 2, canvas.height / 2, canvas.height
+  );
+  bgGrad.addColorStop(0, '#182238');
+  bgGrad.addColorStop(0.6, '#0f1626');
+  bgGrad.addColorStop(1, '#080b13');
+  ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   ctx.strokeStyle = 'rgba(74,85,120,0.22)';
@@ -256,6 +301,18 @@ function render() {
   const cam = me ? { x: me.x - shakeX, y: me.y - shakeY } : { x: 1000, y: 1000 };
 
   drawBackground(cam, now);
+  drawEmbers(dt);
+
+  // warm light pooling under each living player
+  for (const p of latestState.players) {
+    if (!p.alive) continue;
+    const s = worldToScreen(p.x, p.y, cam);
+    const lightGrad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, 140);
+    lightGrad.addColorStop(0, 'rgba(212,175,55,0.12)');
+    lightGrad.addColorStop(1, 'rgba(212,175,55,0)');
+    ctx.fillStyle = lightGrad;
+    ctx.fillRect(s.x - 140, s.y - 140, 280, 280);
+  }
 
   // orbs (pulsing glow)
   for (const o of latestState.orbs) {
@@ -269,14 +326,20 @@ function render() {
     ctx.restore();
   }
 
-  // projectiles with small trail
+  // projectiles: spinning axes with a glowing trail
   for (const pr of latestState.projectiles) {
     const s = worldToScreen(pr.x, pr.y, cam);
     ctx.save();
     ctx.shadowColor = '#d4af37';
-    ctx.shadowBlur = 8;
-    ctx.fillStyle = '#f0d060';
-    ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(240,208,96,0.4)'; ctx.fill();
+    ctx.translate(s.x, s.y);
+    ctx.rotate((now / 80 + (pr.id || 0)) % (Math.PI * 2));
+    ctx.font = '18px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🪓', 0, 0);
     ctx.restore();
   }
 
@@ -284,7 +347,9 @@ function render() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const e of latestState.enemies) {
-    const s = worldToScreen(e.x, e.y, cam);
+    const base = worldToScreen(e.x, e.y, cam);
+    const bob = Math.sin(now / 180 + e.id) * 2.5;
+    const s = { x: base.x, y: base.y + bob };
     const flashedAt = hitFlashes.get(e.id);
     const isFlashing = flashedAt && now - flashedAt < 120;
 
@@ -294,6 +359,8 @@ function render() {
       ctx.strokeStyle = 'rgba(224,96,96,0.6)';
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(224,96,96,0.3)';
+      ctx.beginPath(); ctx.arc(s.x, s.y, auraR + 8, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
@@ -330,14 +397,19 @@ function render() {
   // players
   ctx.font = '26px serif';
   for (const p of latestState.players) {
-    const s = worldToScreen(p.x, p.y, cam);
+    const base = worldToScreen(p.x, p.y, cam);
+    const bob = p.alive ? Math.sin(now / 160 + p.x * 0.01) * 2 : 0;
+    const s = { x: base.x, y: base.y + bob };
+    const facing = playerFacing.get(p.id) || 1;
     ctx.save();
     ctx.globalAlpha = p.alive ? 1 : 0.3;
     if (p.id === myId) {
       ctx.shadowColor = '#d4af37';
       ctx.shadowBlur = 12;
     }
-    ctx.fillText(p.id === myId ? '🛡️' : '🪓', s.x, s.y);
+    ctx.translate(s.x, s.y);
+    ctx.scale(facing, 1);
+    ctx.fillText(p.id === myId ? '🛡️' : '🪓', 0, 0);
     ctx.restore();
     ctx.fillStyle = '#e8e4d8';
     ctx.font = '13px Georgia';
@@ -348,6 +420,18 @@ function render() {
     ctx.fillRect(s.x - w / 2, s.y + 16, w, 5);
     ctx.fillStyle = '#4caf50';
     ctx.fillRect(s.x - w / 2, s.y + 16, w * Math.max(0, p.hp / p.maxHp), 5);
+  }
+
+  // level-up golden burst rings
+  for (const b of levelBursts) {
+    const s = worldToScreen(b.x, b.y, cam);
+    const progress = 1 - b.life / b.maxLife;
+    ctx.save();
+    ctx.globalAlpha = 1 - progress;
+    ctx.strokeStyle = '#f0d060';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 20 + progress * 60, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
   }
 
   if (damageFlash > 0) {

@@ -93,14 +93,27 @@ button:hover { filter: brightness(1.1); }
   align-items: center; justify-content: center;
   gap: 16px;
 }
+#upgradeOverlay h2 {
+  color: #f0d060;
+  text-shadow: 0 0 16px rgba(240,208,96,0.7);
+  letter-spacing: 1px;
+}
 #upgradeChoices { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; max-width: 700px; }
 .upgrade-card {
-  background: #1a2438;
+  background: linear-gradient(160deg, #1e2942, #141c30);
   border: 2px solid #d4af37;
   border-radius: 10px;
   padding: 20px 24px;
   cursor: pointer;
   min-width: 150px;
-  transition: transform 0.1s;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.5), inset 0 0 12px rgba(212,175,55,0.08);
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
 }
-.upgrade-card:hover { transform: translateY(-4px); background: #253150; }
+.upgrade-card:hover {
+  transform: translateY(-4px);
+  border-color: #f0d060;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6), 0 0 20px rgba(240,208,96,0.35);
+}
+
+#statsPanel { box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
+#timer { box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
