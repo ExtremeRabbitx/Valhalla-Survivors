@@ -117,3 +117,32 @@ button:hover { filter: brightness(1.1); }
 
 #statsPanel { box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
 #timer { box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
+
+#touchJoystick {
+  position: fixed;
+  left: 30px;
+  bottom: 30px;
+  z-index: 20;
+  touch-action: none;
+}
+#joystickBase {
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  background: rgba(20,26,40,0.55);
+  border: 2px solid rgba(212,175,55,0.5);
+  position: relative;
+  touch-action: none;
+}
+#joystickKnob {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(212,175,55,0.75);
+  border: 2px solid #f0d060;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}

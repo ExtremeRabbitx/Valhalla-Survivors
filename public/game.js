@@ -38,6 +38,28 @@ const SPRITES = {
   weapon: loadSprite('/assets/weapon-hammer.png'),
   gem: loadSprite('/assets/xp-gem.png'),
 };
+const TILESET = loadSprite('/assets/tileset.png');
+
+// --- Sound effects (Kenney "RPG Audio" / "Impact Sounds" / "Interface Sounds", CC0) ---
+const SFX = {
+  hit: '/assets/sfx/hit.ogg',
+  kill: '/assets/sfx/kill.ogg',
+  pickup: '/assets/sfx/pickup.ogg',
+  damage: '/assets/sfx/damage.ogg',
+  levelup: '/assets/sfx/levelup.ogg',
+  click: '/assets/sfx/click.ogg',
+  gameover: '/assets/sfx/gameover.ogg',
+};
+const sfxPool = {};
+let sfxLastPlayed = {};
+function playSfx(name, { volume = 0.5, throttleMs = 0 } = {}) {
+  const now = performance.now();
+  if (throttleMs && sfxLastPlayed[name] && now - sfxLastPlayed[name] < throttleMs) return;
+  sfxLastPlayed[name] = now;
+  const audio = new Audio(SFX[name]);
+  audio.volume = volume;
+  audio.play().catch(() => {});
+}
 
 function resizeCanvas() {
   canvas.width = window.innerWidth;
@@ -54,6 +76,7 @@ const prefillRoom = params.get('room');
 if (prefillRoom) roomInput.value = prefillRoom.toUpperCase();
 
 document.getElementById('createBtn').addEventListener('click', () => {
+  playSfx('click', { volume: 0.4 });
   const name = nameInput.value.trim() || 'นักรบไร้นาม';
   socket.emit('createRoom', name, (res) => {
     enterWaitingRoom(res.roomId);
@@ -61,6 +84,7 @@ document.getElementById('createBtn').addEventListener('click', () => {
 });
 
 document.getElementById('joinBtn').addEventListener('click', () => {
+  playSfx('click', { volume: 0.4 });
   const name = nameInput.value.trim() || 'นักรบไร้นาม';
   const code = roomInput.value.trim().toUpperCase();
   if (!code) { lobbyMsg.textContent = 'กรอกรหัสห้องก่อน'; return; }
@@ -84,6 +108,7 @@ document.getElementById('copyBtn').addEventListener('click', () => {
 });
 
 document.getElementById('startBtn').addEventListener('click', () => {
+  playSfx('click', { volume: 0.4 });
   socket.emit('startGame');
 });
 
@@ -92,6 +117,7 @@ let particles = [];
 let levelBursts = [];
 const hitFlashes = new Map(); // enemyId -> timestamp
 const playerFacing = new Map(); // playerId -> 1 (right) | -1 (left)
+const playerMoving = new Map(); // playerId -> timestamp of last detected movement
 let shake = { time: 0, magnitude: 0 };
 let damageFlash = 0;
 
@@ -149,6 +175,7 @@ function diffEffects(oldState, newState) {
       // enemy died
       spawnParticles(e.x, e.y, ENEMY_PARTICLE_COLOR[e.type] || '#c0392b', e.elite ? 22 : 10, e.elite ? 220 : 140, 0.5);
       hitFlashes.delete(id);
+      playSfx('kill', { volume: e.elite ? 0.6 : 0.35, throttleMs: 40 });
     }
   }
   for (const e of newState.enemies) {
@@ -156,6 +183,7 @@ function diffEffects(oldState, newState) {
     if (old && e.hp < old.hp) {
       hitFlashes.set(e.id, performance.now());
       spawnParticles(e.x, e.y, '#ffe08a', 3, 80, 0.25);
+      playSfx('hit', { volume: 0.2, throttleMs: 60 });
     }
   }
   const oldPlayers = new Map(oldState.players.map((p) => [p.id, p]));
@@ -166,14 +194,22 @@ function diffEffects(oldState, newState) {
       if (p.id === myId) {
         triggerShake(8, 0.25);
         damageFlash = 0.35;
+        playSfx('damage', { volume: 0.45 });
       }
     }
     if (old && p.level > old.level) {
       levelBursts.push({ x: p.x, y: p.y, life: 0.6, maxLife: 0.6 });
       spawnParticles(p.x, p.y, '#f0d060', 18, 160, 0.6);
+      if (p.id === myId) playSfx('levelup', { volume: 0.5 });
+    }
+    if (old && p.xp > old.xp && p.level === old.level) {
+      if (p.id === myId) playSfx('pickup', { volume: 0.15, throttleMs: 120 });
     }
     if (old && Math.abs(p.x - old.x) > 0.5) {
       playerFacing.set(p.id, p.x > old.x ? 1 : -1);
+    }
+    if (old && (Math.abs(p.x - old.x) > 0.5 || Math.abs(p.y - old.y) > 0.5)) {
+      playerMoving.set(p.id, performance.now());
     }
   }
 }
@@ -189,15 +225,63 @@ window.addEventListener('keyup', (e) => {
   if (k in keys) keys[k] = false;
 });
 
+// --- Touch joystick (mobile) ---
+const touchJoystick = document.getElementById('touchJoystick');
+const joystickBase = document.getElementById('joystickBase');
+const joystickKnob = document.getElementById('joystickKnob');
+let touchInput = { x: 0, y: 0, active: false };
+
+if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+  touchJoystick.classList.remove('hidden');
+}
+
+function handleJoystickMove(clientX, clientY) {
+  const rect = joystickBase.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  let dx = clientX - cx;
+  let dy = clientY - cy;
+  const dist = Math.hypot(dx, dy);
+  const max = rect.width / 2;
+  if (dist > max) { dx = (dx / dist) * max; dy = (dy / dist) * max; }
+  joystickKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+  touchInput.x = dx / max;
+  touchInput.y = dy / max;
+  touchInput.active = true;
+}
+function resetJoystick() {
+  touchInput = { x: 0, y: 0, active: false };
+  joystickKnob.style.transform = 'translate(-50%, -50%)';
+}
+joystickBase.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  handleJoystickMove(t.clientX, t.clientY);
+}, { passive: false });
+joystickBase.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  handleJoystickMove(t.clientX, t.clientY);
+}, { passive: false });
+joystickBase.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  resetJoystick();
+}, { passive: false });
+
 let lastSentDx = null, lastSentDy = null;
 let lastMoveDir = { x: 0, y: -1 };
 setInterval(() => {
   if (!roomStarted) return;
   let dx = 0, dy = 0;
-  if (keys.w || keys.ArrowUp) dy -= 1;
-  if (keys.s || keys.ArrowDown) dy += 1;
-  if (keys.a || keys.ArrowLeft) dx -= 1;
-  if (keys.d || keys.ArrowRight) dx += 1;
+  if (touchInput.active) {
+    dx = touchInput.x;
+    dy = touchInput.y;
+  } else {
+    if (keys.w || keys.ArrowUp) dy -= 1;
+    if (keys.s || keys.ArrowDown) dy += 1;
+    if (keys.a || keys.ArrowLeft) dx -= 1;
+    if (keys.d || keys.ArrowRight) dx += 1;
+  }
   if (dx !== lastSentDx || dy !== lastSentDy) {
     lastSentDx = dx; lastSentDy = dy;
     socket.emit('input', { dx, dy });
@@ -212,12 +296,12 @@ function worldToScreen(x, y, cam) {
 
 function drawSprite(img, x, y, size, opts = {}) {
   if (!img.complete || img.naturalWidth === 0) return;
-  const { rotation = 0, flip = 1, flash = false, alpha = 1 } = opts;
+  const { rotation = 0, flip = 1, flash = false, alpha = 1, scaleX = 1, scaleY = 1 } = opts;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.translate(x, y);
   if (rotation) ctx.rotate(rotation);
-  ctx.scale(flip, 1);
+  ctx.scale(flip * scaleX, scaleY);
   if (flash) ctx.filter = 'brightness(2.5)';
   ctx.drawImage(img, -size / 2, -size / 2, size, size);
   ctx.restore();
@@ -253,6 +337,60 @@ function drawEmbers(dt) {
     ctx.beginPath(); ctx.arc(x, y, e.size, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
+}
+
+// nature decoration sprites, cut from the Kenney "Roguelike/RPG" tileset (16x16, 1px margin)
+const NATURE_SRC = {
+  tree1: { x: 221, y: 170 },
+  tree2: { x: 238, y: 170 },
+  pine: { x: 272, y: 170 },
+  bushGreen: { x: 340, y: 153 },
+  bushOrange: { x: 357, y: 153 },
+  bushTeal: { x: 374, y: 153 },
+  sprout: { x: 391, y: 170 },
+};
+const NATURE_KEYS = Object.keys(NATURE_SRC);
+
+function drawTile(img, src, x, y, size) {
+  if (!img.complete || img.naturalWidth === 0) return;
+  ctx.drawImage(img, src.x, src.y, 16, 16, x - size / 2, y - size, size, size);
+}
+
+function drawRock(x, y, size) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath(); ctx.ellipse(x, y + size * 0.28, size * 0.5, size * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#3a3f4d';
+  ctx.beginPath(); ctx.ellipse(x, y, size * 0.5, size * 0.34, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#5b6274';
+  ctx.beginPath(); ctx.ellipse(x - size * 0.12, y - size * 0.1, size * 0.3, size * 0.18, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawNature(cam) {
+  const cell = 190;
+  const startCol = Math.floor((cam.x - canvas.width / 2) / cell) - 1;
+  const endCol = Math.floor((cam.x + canvas.width / 2) / cell) + 1;
+  const startRow = Math.floor((cam.y - canvas.height / 2) / cell) - 1;
+  const endRow = Math.floor((cam.y + canvas.height / 2) / cell) + 1;
+  for (let col = startCol; col <= endCol; col++) {
+    for (let row = startRow; row <= endRow; row++) {
+      const h1 = Math.abs(Math.sin(col * 91.3 + row * 57.1) * 24634.634) % 1;
+      if (h1 > 0.5) continue; // ~half the cells get a prop
+      const wx = col * cell + ((h1 * 733) % cell);
+      const wy = row * cell + ((h1 * 911) % cell);
+      const s = worldToScreen(wx, wy, cam);
+      if (s.x < -60 || s.x > canvas.width + 60 || s.y < -100 || s.y > canvas.height + 60) continue;
+      const h2 = Math.abs(Math.sin(col * 12.9 + row * 78.2 + 4.7) * 12345.678) % 1;
+      if (h2 < 0.15) {
+        drawRock(s.x, s.y, 14 + h2 * 60);
+      } else {
+        const type = NATURE_KEYS[Math.floor(h2 * NATURE_KEYS.length * 97) % NATURE_KEYS.length];
+        const size = type === 'tree1' || type === 'tree2' || type === 'pine' ? 42 : 22;
+        drawTile(TILESET, NATURE_SRC[type], s.x, s.y, size);
+      }
+    }
+  }
 }
 
 function drawBackground(cam, t) {
@@ -329,6 +467,7 @@ function render() {
   const cam = me ? { x: me.x - shakeX, y: me.y - shakeY } : { x: 1000, y: 1000 };
 
   drawBackground(cam, now);
+  drawNature(cam);
   drawEmbers(dt);
 
   // warm light pooling under each living player
@@ -386,7 +525,10 @@ function render() {
     }
 
     const size = e.elite ? 44 : 30;
-    drawSprite(ENEMY_SPRITE[e.type] || SPRITES.skeleton, s.x, s.y, size, { flash: isFlashing });
+    const walk = Math.sin(now / 110 + e.id);
+    drawSprite(ENEMY_SPRITE[e.type] || SPRITES.skeleton, s.x, s.y, size, {
+      flash: isFlashing, scaleX: 1 - walk * 0.06, scaleY: 1 + walk * 0.06,
+    });
 
     const w = e.elite ? 50 : 26;
     const barY = e.elite ? -34 : -24;
@@ -412,10 +554,13 @@ function render() {
 
   // players
   for (const p of latestState.players) {
+    const isMoving = p.alive && (now - (playerMoving.get(p.id) || 0)) < 150;
+    const bobSpeed = isMoving ? 90 : 500;
+    const bob = p.alive ? Math.sin(now / bobSpeed + p.x * 0.01) * (isMoving ? 3 : 1) : 0;
     const base = worldToScreen(p.x, p.y, cam);
-    const bob = p.alive ? Math.sin(now / 160 + p.x * 0.01) * 2 : 0;
     const s = { x: base.x, y: base.y + bob };
     const facing = playerFacing.get(p.id) || 1;
+    const walk = isMoving ? Math.sin(now / 90) : 0;
     ctx.save();
     if (p.id === myId) {
       ctx.shadowColor = '#d4af37';
@@ -423,6 +568,7 @@ function render() {
     }
     drawSprite(p.id === myId ? SPRITES.playerMe : SPRITES.playerOther, s.x, s.y, 34, {
       flip: facing, alpha: p.alive ? 1 : 0.3,
+      scaleX: 1 - walk * 0.07, scaleY: 1 + walk * 0.07,
     });
     ctx.restore();
     ctx.fillStyle = '#e8e4d8';
@@ -483,6 +629,7 @@ function updateHud(state) {
         card.className = 'upgrade-card';
         card.textContent = u.label;
         card.addEventListener('click', () => {
+          playSfx('click', { volume: 0.4 });
           socket.emit('chooseUpgrade', u.id);
           upgradeOverlay.classList.add('hidden');
           upgradeChoices.dataset.signature = '';
@@ -500,6 +647,7 @@ function showGameOver(state) {
   upgradeOverlay.classList.add('hidden');
   if (!gameOverOverlay.classList.contains('hidden')) return;
   gameOverOverlay.classList.remove('hidden');
+  playSfx('gameover', { volume: 0.5 });
   gameOverStats.innerHTML = `รอดชีวิต ${formatTime(state.elapsed)}<br/>` +
     state.players.map((p) => `${p.name}: เลเวล ${p.level}, ฆ่า ${p.kills} ตัว`).join('<br/>');
 }
