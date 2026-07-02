@@ -1232,15 +1232,32 @@ function render() {
     }
 
     if (p.alive && p.fireAuraLevel > 0) {
-      const auraR = 70 + p.fireAuraLevel * 15;
+      const dmgRadius = 70 + p.fireAuraLevel * 15;
+      // faint ground ring marking the true damage range, kept subtle so it doesn't fight
+      // with the orbiting flames for attention
       ctx.save();
-      ctx.globalAlpha = 0.22 + 0.06 * Math.sin(now / 180);
-      ctx.fillStyle = '#f08040';
-      ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 0.5;
-      ctx.strokeStyle = '#f0a050';
+      ctx.globalAlpha = 0.1 + 0.03 * Math.sin(now / 180);
+      ctx.strokeStyle = '#f08040';
       ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(s.x, s.y, dmgRadius, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+
+      // a spinning wheel of flame icons orbiting the player — more flames and faster spin at higher levels
+      const orbitR = 34 + p.fireAuraLevel * 5;
+      const flameCount = 2 + p.fireAuraLevel;
+      const spinSpeed = 900 - p.fireAuraLevel * 60;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = '16px serif';
+      ctx.shadowColor = '#f08040';
+      ctx.shadowBlur = 10;
+      for (let i = 0; i < flameCount; i++) {
+        const angle = (now / spinSpeed) + (i * (Math.PI * 2)) / flameCount;
+        const fx = s.x + Math.cos(angle) * orbitR;
+        const fy = s.y + Math.sin(angle) * orbitR;
+        ctx.fillText('🔥', fx, fy);
+      }
       ctx.restore();
     }
 
