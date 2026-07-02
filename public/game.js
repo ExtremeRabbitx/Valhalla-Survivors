@@ -18,8 +18,13 @@ const upgradeChoices = document.getElementById('upgradeChoices');
 const gameOverOverlay = document.getElementById('gameOverOverlay');
 const gameOverStats = document.getElementById('gameOverStats');
 const leaderboardList = document.getElementById('leaderboardList');
+const enduranceList = document.getElementById('enduranceList');
 const waitingPlayerList = document.getElementById('waitingPlayerList');
 const achievementToast = document.getElementById('achievementToast');
+const goldDisplay = document.getElementById('goldDisplay');
+const skillBtn = document.getElementById('skillBtn');
+const merchantPanel = document.getElementById('merchantPanel');
+const merchantOffers = document.getElementById('merchantOffers');
 
 let myId = null;
 let latestState = null;
@@ -168,6 +173,27 @@ const TRANSLATIONS = {
     relicLabel: (n) => `🏺 เรลิกที่สะสม: ${n}`,
     treasureLabel: 'ปกป้องสมบัติ!',
     reviveLabel: 'กำลังปลุก...',
+    classLabel: 'อาชีพ:',
+    classWarrior: '🛡️ นักรบ',
+    classArcher: '🏹 นักธนู',
+    classMage: '🔮 หมอผี',
+    enduranceTitle: '🌌 อันดับโหมด Endless (15 นาที+)',
+    merchantTitle: '🛒 พ่อค้าเร่',
+    merchantItem_heal: (cost) => `💊 ฟื้นเลือดเต็ม (${cost} ทอง)`,
+    merchantItem_maxhp: (cost) => `❤️ +20 เลือดสูงสุด (${cost} ทอง)`,
+    merchantItem_damage: (cost) => `⚔️ +6 ดาเมจ (${cost} ทอง)`,
+    merchantItem_speed: (cost) => `👟 +25 ความเร็ว (${cost} ทอง)`,
+    merchantItem_atkspeed: (cost) => `⚡ โจมตีเร็วขึ้น (${cost} ทอง)`,
+    purchaseOk: '✅ ซื้อสำเร็จ!',
+    nightLabel: '🌙 กลางคืน — ศัตรูแรงขึ้นแต่ดรอปดีขึ้น',
+    endlessLabel: '🌌 โหมด Endless — ความยากเพิ่มต่อเนื่องไม่มีสิ้นสุด',
+    modifier_none: 'รอบนี้ไม่มีเงื่อนไขพิเศษ',
+    modifier_swift_foes: '🌀 ศัตรูเร็วขึ้น 20% แต่ดรอป XP เพิ่ม 30%',
+    modifier_glass_cannon: '💎 ดาเมจ +25% แต่เลือดสูงสุด -20%',
+    modifier_blood_moon: '🩸 ศัตรูเลือดเพิ่ม 15% แต่ดรอปทองเพิ่มเท่าตัว',
+    modifier_fortune: '🍀 บอสสุ่มเกิดถี่ขึ้นแต่แข็งแกร่งขึ้น',
+    modifier_blessed_ground: '✨ ฟื้นฟูเลือดพาสซีฟ +0.5/วิ ให้ทุกคน',
+    skillReady: 'ทักษะพร้อมใช้ (กด Space)',
   },
   en: {
     subtitle: 'Survive the draugr horde as long as you can. Team up with friends!',
@@ -212,6 +238,27 @@ const TRANSLATIONS = {
     relicLabel: (n) => `🏺 Relics collected: ${n}`,
     treasureLabel: 'Defend the treasure!',
     reviveLabel: 'Reviving...',
+    classLabel: 'Class:',
+    classWarrior: '🛡️ Warrior',
+    classArcher: '🏹 Archer',
+    classMage: '🔮 Mage',
+    enduranceTitle: '🌌 Endless Mode Rankings (15min+)',
+    merchantTitle: '🛒 Traveling Merchant',
+    merchantItem_heal: (cost) => `💊 Full heal (${cost} gold)`,
+    merchantItem_maxhp: (cost) => `❤️ +20 max HP (${cost} gold)`,
+    merchantItem_damage: (cost) => `⚔️ +6 damage (${cost} gold)`,
+    merchantItem_speed: (cost) => `👟 +25 speed (${cost} gold)`,
+    merchantItem_atkspeed: (cost) => `⚡ Faster attack (${cost} gold)`,
+    purchaseOk: '✅ Purchased!',
+    nightLabel: '🌙 Night — enemies are stronger but drop more',
+    endlessLabel: '🌌 Endless Mode — difficulty keeps climbing forever',
+    modifier_none: 'No special condition this run',
+    modifier_swift_foes: '🌀 Enemies 20% faster, but 30% more XP',
+    modifier_glass_cannon: '💎 +25% damage, but -20% max HP',
+    modifier_blood_moon: '🩸 Enemies 15% tankier, but double gold drops',
+    modifier_fortune: '🍀 Bosses spawn more often but hit harder',
+    modifier_blessed_ground: '✨ Everyone regens +0.5 HP/s',
+    skillReady: 'Skill ready (press Space)',
   },
 };
 const UPGRADE_TEXT = {
@@ -326,6 +373,12 @@ document.querySelectorAll('input[name="weapon"]').forEach((el) => {
   });
 });
 
+document.querySelectorAll('input[name="class"]').forEach((el) => {
+  el.addEventListener('change', () => {
+    socket.emit('setClass', el.value);
+  });
+});
+
 socket.on('lobbyUpdate', ({ players }) => {
   waitingPlayerList.innerHTML = players.map((p) => `<span>${p.name}</span>`).join('');
 });
@@ -340,6 +393,27 @@ function renderLeaderboard(list) {
     .join('');
 }
 socket.on('leaderboard', (list) => renderLeaderboard(list));
+
+function renderEnduranceLeaderboard(list) {
+  if (!list || list.length === 0) {
+    enduranceList.innerHTML = `<li style="list-style:none">${t('noScores')}</li>`;
+    return;
+  }
+  enduranceList.innerHTML = list
+    .map((e, i) => `<li>${t('leaderboardEntry', i + 1, e.name, formatTime(e.elapsed), e.level)}</li>`)
+    .join('');
+}
+socket.on('enduranceLeaderboard', (list) => renderEnduranceLeaderboard(list));
+
+socket.on('runModifier', (id) => {
+  toastQueue.push(t('modifier_' + id));
+  showNextToast();
+});
+
+socket.on('purchaseOk', () => {
+  toastQueue.push(t('purchaseOk'));
+  showNextToast();
+});
 
 // --- Achievements (client-side, unlocked state kept in localStorage) ---
 const unlockedAchievements = new Set(JSON.parse(localStorage.getItem('vs_achievements') || '[]'));
@@ -390,6 +464,45 @@ const playerFacing = new Map(); // playerId -> 1 (right) | -1 (left)
 const playerMoving = new Map(); // playerId -> timestamp of last detected movement
 let shake = { time: 0, magnitude: 0 };
 let damageFlash = 0;
+
+// --- Class skill effects ---
+let skillEffects = [];
+socket.on('skillEffect', (fx) => {
+  skillEffects.push({ ...fx, maxLife: 0.5, startedAt: performance.now() });
+  const color = fx.type === 'bash' ? '#ff8040' : fx.type === 'heal' ? '#7ae08a' : '#7ad4f0';
+  spawnParticles(fx.x, fx.y, color, 14, 160, 0.4);
+  if (fx.type === 'bash') triggerShake(6, 0.15);
+});
+function renderSkillEffects(cam, now) {
+  skillEffects = skillEffects.filter((fx) => {
+    const elapsed = (now - fx.startedAt) / 1000;
+    if (elapsed > fx.maxLife) return false;
+    const progress = elapsed / fx.maxLife;
+    const s = worldToScreen(fx.x, fx.y, cam);
+    if (fx.type === 'bash') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#ff8040';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 100) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'volley') {
+      ctx.save();
+      ctx.globalAlpha = (1 - progress) * 0.6;
+      ctx.fillStyle = '#7ad4f0';
+      ctx.beginPath(); ctx.arc(s.x, s.y, 30 * (1 - progress) + 10, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    } else if (fx.type === 'heal') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#4caf50';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 200) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+    return true;
+  });
+}
 
 // ambient embers drifting upward, screen-space (purely decorative)
 const embers = Array.from({ length: 36 }, () => ({
@@ -511,7 +624,18 @@ let touchInput = { x: 0, y: 0, active: false };
 
 if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
   touchJoystick.classList.remove('hidden');
+  skillBtn.classList.remove('hidden');
 }
+
+function triggerSkill() {
+  if (!roomStarted) return;
+  playSfx('click', { volume: 0.3 });
+  socket.emit('useSkill');
+}
+skillBtn.addEventListener('click', triggerSkill);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); triggerSkill(); }
+});
 
 function handleJoystickMove(clientX, clientY) {
   const rect = joystickBase.getBoundingClientRect();
@@ -570,6 +694,10 @@ setInterval(() => {
 // --- Rendering ---
 function worldToScreen(x, y, cam) {
   return { x: x - cam.x + canvas.width / 2, y: y - cam.y + canvas.height / 2 };
+}
+
+function distanceClient(ax, ay, bx, by) {
+  return Math.hypot(ax - bx, ay - by);
 }
 
 function drawSprite(img, x, y, size, opts = {}) {
@@ -790,15 +918,42 @@ function render() {
     ctx.fillRect(s.x - 140, s.y - 140, 280, 280);
   }
 
-  // orbs (pulsing glow) — relics glow gold instead of blue
+  // orbs (pulsing glow) — relics glow gold, gold coins render as coins, XP stays blue
   for (const o of latestState.orbs) {
     const s = worldToScreen(o.x, o.y, cam);
     const pulse = 1 + 0.2 * Math.sin(now / 150 + o.id);
+    if (o.gold) {
+      ctx.save();
+      ctx.shadowColor = '#f0d060';
+      ctx.shadowBlur = 10;
+      ctx.font = `${16 * pulse}px serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🪙', s.x, s.y);
+      ctx.restore();
+      continue;
+    }
     ctx.save();
     ctx.shadowColor = o.relic ? '#f0d060' : '#3aa0d4';
     ctx.shadowBlur = o.relic ? 18 : 10;
     drawSprite(SPRITES.gem, s.x, s.y, (o.relic ? 26 : 18) * pulse);
     ctx.restore();
+  }
+
+  // traveling merchant NPC
+  if (latestState.merchant) {
+    const s = worldToScreen(latestState.merchant.x, latestState.merchant.y, cam);
+    ctx.save();
+    ctx.shadowColor = '#d4af37';
+    ctx.shadowBlur = 14;
+    ctx.font = '32px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🧙', s.x, s.y);
+    ctx.restore();
+    ctx.fillStyle = '#d4af37';
+    ctx.font = 'bold 13px Georgia';
+    ctx.fillText(t('merchantTitle'), s.x, s.y - 30);
   }
 
   // treasure event: a chest players must stand near to claim
@@ -998,6 +1153,12 @@ function render() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
+  if (latestState.night) {
+    ctx.fillStyle = 'rgba(5,10,35,0.32)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  renderSkillEffects(cam, now);
   renderMinimap();
 }
 render();
@@ -1009,7 +1170,8 @@ function formatTime(t) {
 }
 
 function updateHud(state) {
-  timerEl.textContent = formatTime(state.elapsed);
+  timerEl.textContent = formatTime(state.elapsed) + (state.night ? ' 🌙' : '') + (state.endless ? ' 🌌' : '');
+  timerEl.title = state.endless ? t('endlessLabel') : (state.night ? t('nightLabel') : '');
   statsPanel.innerHTML = state.players.map((p) => `
     <div class="pstat">
       <strong>${p.name}${p.id === myId ? t('you') : ''}</strong> — Lv.${p.level} ${p.alive ? '' : '💀'}
@@ -1019,6 +1181,31 @@ function updateHud(state) {
   `).join('');
 
   const me = state.players.find((p) => p.id === myId);
+
+  if (me) {
+    goldDisplay.textContent = `🪙 ${me.gold}`;
+    const ready = me.skillCooldown <= 0;
+    skillBtn.disabled = !ready || !me.alive;
+    skillBtn.title = ready ? t('skillReady') : Math.ceil(me.skillCooldown / 1000) + 's';
+  }
+
+  if (state.merchant && me && me.alive && distanceClient(me.x, me.y, state.merchant.x, state.merchant.y) < 90) {
+    merchantPanel.classList.remove('hidden');
+    merchantOffers.innerHTML = state.merchant.offers.map((offer, i) => {
+      if (!offer) return '';
+      const affordable = me.gold >= offer.cost;
+      return `<button class="merchant-offer" data-i="${i}" ${affordable ? '' : 'disabled'}>${t('merchantItem_' + offer.id, offer.cost)}</button>`;
+    }).join('');
+    merchantOffers.querySelectorAll('.merchant-offer').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        playSfx('click', { volume: 0.4 });
+        socket.emit('buyItem', parseInt(btn.dataset.i, 10));
+      });
+    });
+  } else {
+    merchantPanel.classList.add('hidden');
+  }
+
   if (me && me.pendingLevelUp) {
     const signature = me.pendingLevelUp.map((u) => u.id).join(',');
     if (upgradeChoices.dataset.signature !== signature) {

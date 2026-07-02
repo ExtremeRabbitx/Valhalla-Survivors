@@ -33,6 +33,10 @@
     <h3 data-i18n="leaderboardTitle">อันดับผู้รอดชีวิต</h3>
     <ol id="leaderboardList"></ol>
   </div>
+  <div id="leaderboardBox">
+    <h3 data-i18n="enduranceTitle">🌌 อันดับโหมด Endless (15 นาที+)</h3>
+    <ol id="enduranceList"></ol>
+  </div>
 </div>
 
 <div id="waitingRoom" class="screen hidden">
@@ -57,6 +61,13 @@
     <label><input type="radio" name="weapon" value="sword" /> <span data-i18n="weaponSword">🗡️ ดาบ</span></label>
   </div>
 
+  <div class="difficulty-row" id="classRow">
+    <span data-i18n="classLabel">อาชีพ:</span>
+    <label><input type="radio" name="class" value="warrior" checked /> <span data-i18n="classWarrior">🛡️ นักรบ</span></label>
+    <label><input type="radio" name="class" value="archer" /> <span data-i18n="classArcher">🏹 นักธนู</span></label>
+    <label><input type="radio" name="class" value="mage" /> <span data-i18n="classMage">🔮 หมอผี</span></label>
+  </div>
+
   <div id="waitingPlayerList"></div>
   <p id="relicDisplay" class="msg" style="color:#f0d060"></p>
 
@@ -68,6 +79,7 @@
   <canvas id="canvas"></canvas>
   <div id="hud">
     <div id="timer">00:00</div>
+    <div id="goldDisplay">🪙 0</div>
     <div id="statsPanel"></div>
   </div>
   <canvas id="minimap" width="140" height="140"></canvas>
@@ -77,6 +89,11 @@
   </div>
   <div id="touchJoystick" class="hidden">
     <div id="joystickBase"><div id="joystickKnob"></div></div>
+  </div>
+  <button id="skillBtn" class="hidden">✨</button>
+  <div id="merchantPanel" class="hidden">
+    <h3 data-i18n="merchantTitle">🛒 พ่อค้าเร่</h3>
+    <div id="merchantOffers"></div>
   </div>
   <div id="achievementToast" class="hidden"></div>
   <div id="gameOverOverlay" class="hidden">

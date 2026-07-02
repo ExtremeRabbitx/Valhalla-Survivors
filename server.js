@@ -27,6 +27,15 @@ const TREASURE_RADIUS = 60;
 const TREASURE_REQUIRED = 6; // seconds of channeling to claim
 const TREASURE_TIMEOUT = 22; // seconds before it disappears unclaimed
 const EVOLVE_DAMAGE_UPGRADES = 5; // times 'damage' must be picked to evolve a weapon
+const NIGHT_CYCLE = 90; // seconds per full day/night cycle
+const NIGHT_DURATION = 30; // last N seconds of each cycle are night
+const MERCHANT_INTERVAL = 70;
+const MERCHANT_DURATION = 20;
+const MERCHANT_RADIUS = 80;
+const ENDLESS_THRESHOLD = 900; // 15 minutes — scaling accelerates and a separate leaderboard applies
+const BASH_RADIUS = 100;
+const HEAL_RADIUS = 200;
+const VOLLEY_COUNT = 10;
 
 const UPGRADES = [
   { id: 'damage', label: '⚔️ เพิ่มดาเมจ', apply: (p) => { p.damage += 4; } },
@@ -51,6 +60,29 @@ const WEAPONS = {
   sword: { dmg: 0.85, atkSpeed: 1, range: 1.35 },
 };
 
+const CLASSES = {
+  warrior: { hpMult: 1.25, dmgMult: 1, speedMult: 0.95, skill: 'bash', skillCooldownMax: 7000 },
+  archer: { hpMult: 0.85, dmgMult: 1.05, speedMult: 1.1, skill: 'volley', skillCooldownMax: 6000 },
+  mage: { hpMult: 0.9, dmgMult: 0.95, speedMult: 1, skill: 'heal', skillCooldownMax: 10000 },
+};
+
+const MODIFIERS = [
+  { id: 'none', enemySpeedMult: 1, enemyHpMult: 1, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1, regenBonus: 0, goldMult: 1 },
+  { id: 'swift_foes', enemySpeedMult: 1.2, enemyHpMult: 1, xpMult: 1.3, dmgMult: 1, hpMult: 1, eliteChanceMult: 1, regenBonus: 0, goldMult: 1 },
+  { id: 'glass_cannon', enemySpeedMult: 1, enemyHpMult: 1, xpMult: 1, dmgMult: 1.25, hpMult: 0.8, eliteChanceMult: 1, regenBonus: 0, goldMult: 1 },
+  { id: 'blood_moon', enemySpeedMult: 1, enemyHpMult: 1.15, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1, regenBonus: 0, goldMult: 2 },
+  { id: 'fortune', enemySpeedMult: 1, enemyHpMult: 1.2, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1.6, regenBonus: 0, goldMult: 1 },
+  { id: 'blessed_ground', enemySpeedMult: 1, enemyHpMult: 1, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1, regenBonus: 0.5, goldMult: 1 },
+];
+
+const MERCHANT_ITEMS = [
+  { id: 'heal', cost: 20, apply: (p) => { p.hp = p.maxHp; } },
+  { id: 'maxhp', cost: 25, apply: (p) => { p.maxHp += 20; p.hp += 20; } },
+  { id: 'damage', cost: 30, apply: (p) => { p.damage += 6; } },
+  { id: 'speed', cost: 20, apply: (p) => { p.speed += 25; } },
+  { id: 'atkspeed', cost: 30, apply: (p) => { p.attackCooldownMax = Math.max(150, p.attackCooldownMax - 50); } },
+];
+
 function randomUpgrades() {
   const shuffled = [...UPGRADES].sort(() => Math.random() - 0.5);
   return shuffled.slice(0, 3).map((u) => ({ id: u.id, label: u.label }));
@@ -66,7 +98,12 @@ function makePlayer(id, name) {
     name,
     weaponChoice: 'hammer',
     weapon: 'hammer',
+    classChoice: 'warrior',
+    playerClass: 'warrior',
     relicCount: 0,
+    gold: 0,
+    skillCooldown: 0,
+    skillCooldownMax: 7000,
     x: WORLD_W / 2 + (Math.random() * 100 - 50),
     y: WORLD_H / 2 + (Math.random() * 100 - 50),
     dx: 0,
@@ -101,7 +138,7 @@ const rooms = new Map();
 
 function broadcastLobby(room) {
   io.to(room.id).emit('lobbyUpdate', {
-    players: [...room.players.values()].map((p) => ({ name: p.name, weaponChoice: p.weaponChoice })),
+    players: [...room.players.values()].map((p) => ({ name: p.name, weaponChoice: p.weaponChoice, classChoice: p.classChoice })),
   });
 }
 
@@ -115,15 +152,18 @@ function createRoom() {
     enemyProjectiles: [],
     orbs: [],
     treasure: null,
+    merchant: null,
     started: false,
     gameOver: false,
     leaderboardRecorded: false,
     difficulty: 'normal',
+    modifier: MODIFIERS[0],
     elapsed: 0,
     spawnTimer: 0,
     worldBossTimer: WORLD_BOSS_INTERVAL,
     worldBossAlive: false,
     eventTimer: EVENT_INTERVAL_MIN,
+    merchantTimer: MERCHANT_INTERVAL,
     nextEnemyId: 1,
     nextProjId: 1,
     nextOrbId: 1,
@@ -148,6 +188,14 @@ function pickEnemyType() {
   return 'wolf';
 }
 
+// After ENDLESS_THRESHOLD, difficulty growth accelerates so the run never truly plateaus.
+function effectiveMinute(room) {
+  const minute = room.elapsed / 60;
+  const endlessMinute = ENDLESS_THRESHOLD / 60;
+  if (minute <= endlessMinute) return minute;
+  return endlessMinute + (minute - endlessMinute) * 1.6;
+}
+
 function spawnEnemy(room, opts = {}) {
   const { forceWorldBoss, forceType, atPlayer } = opts;
   const angle = Math.random() * Math.PI * 2;
@@ -157,22 +205,24 @@ function spawnEnemy(room, opts = {}) {
   const target = atPlayer || players[Math.floor(Math.random() * players.length)];
   const x = Math.max(20, Math.min(WORLD_W - 20, target.x + Math.cos(angle) * dist));
   const y = Math.max(20, Math.min(WORLD_H - 20, target.y + Math.sin(angle) * dist));
-  const minute = room.elapsed / 60;
+  const minute = effectiveMinute(room);
   const diff = DIFFICULTY[room.difficulty] || DIFFICULTY.normal;
+  const mod = room.modifier || MODIFIERS[0];
   // Co-op scaling: more players alive => enemies tankier so the fight stays a real fight,
   // but not linearly, so a duo isn't punished as hard as raw player-count math would suggest. Capped for larger groups.
   const coopScale = Math.min(2.6, 1 + 0.35 * (players.length - 1));
-  const isElite = !forceWorldBoss && !forceType && Math.random() < Math.min(0.15, minute * 0.03);
+  const isElite = !forceWorldBoss && !forceType && Math.random() < Math.min(0.15, minute * 0.03) * mod.eliteChanceMult;
   const isWorldBoss = !!forceWorldBoss;
   const type = isWorldBoss ? 'worldboss' : (forceType || (isElite ? 'draugr' : pickEnemyType()));
   const eliteMult = isWorldBoss ? 16 : (isElite ? 4 : 1);
-  const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * eliteMult);
-  const speed = (60 + Math.random() * 20 + minute * 2) * (isElite || isWorldBoss ? 0.75 : 1);
+  const night = isNight(room);
+  const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * mod.enemyHpMult * eliteMult * (night ? 1.15 : 1));
+  const speed = (60 + Math.random() * 20 + minute * 2) * (isElite || isWorldBoss ? 0.75 : 1) * mod.enemySpeedMult;
   const enemy = {
     id: room.nextEnemyId++,
     x, y, hp, maxHp: hp,
     speed,
-    damage: Math.round((4 + minute * 1.5) * diff.damage * (isWorldBoss ? 3 : (isElite ? 2 : 1))),
+    damage: Math.round((4 + minute * 1.5) * diff.damage * (isWorldBoss ? 3 : (isElite ? 2 : 1)) * (night ? 1.1 : 1)),
     elite: isElite || isWorldBoss,
     worldBoss: isWorldBoss,
     name: (isElite || isWorldBoss) ? nextBossName(isWorldBoss) : null,
@@ -197,24 +247,35 @@ function distance(ax, ay, bx, by) {
   return Math.hypot(ax - bx, ay - by);
 }
 
-// --- Leaderboard (in-memory, best-effort persisted to disk) ---
+function isNight(room) {
+  return (room.elapsed % NIGHT_CYCLE) >= (NIGHT_CYCLE - NIGHT_DURATION);
+}
+
+// --- Leaderboards (in-memory, best-effort persisted to disk) ---
 const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+const ENDURANCE_FILE = path.join(__dirname, 'endurance.json');
 let leaderboard = [];
-try {
-  leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf8'));
-} catch (e) { leaderboard = []; }
+let enduranceLeaderboard = [];
+try { leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf8')); } catch (e) { leaderboard = []; }
+try { enduranceLeaderboard = JSON.parse(fs.readFileSync(ENDURANCE_FILE, 'utf8')); } catch (e) { enduranceLeaderboard = []; }
 
 function recordLeaderboard(room) {
   for (const p of room.players.values()) {
-    leaderboard.push({
+    const entry = {
       name: p.name, elapsed: Math.round(room.elapsed), level: p.level,
       kills: p.kills, difficulty: room.difficulty, date: Date.now(),
-    });
+    };
+    leaderboard.push(entry);
+    if (room.elapsed >= ENDLESS_THRESHOLD) enduranceLeaderboard.push({ ...entry });
   }
   leaderboard.sort((a, b) => b.elapsed - a.elapsed);
   leaderboard = leaderboard.slice(0, 10);
+  enduranceLeaderboard.sort((a, b) => b.elapsed - a.elapsed);
+  enduranceLeaderboard = enduranceLeaderboard.slice(0, 10);
   try { fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard)); } catch (e) { /* best effort */ }
+  try { fs.writeFileSync(ENDURANCE_FILE, JSON.stringify(enduranceLeaderboard)); } catch (e) { /* best effort */ }
   io.emit('leaderboard', leaderboard);
+  io.emit('enduranceLeaderboard', enduranceLeaderboard);
 }
 
 function triggerWorldEvent(room, alivePlayers) {
@@ -257,8 +318,10 @@ function tickRoom(room) {
     return;
   }
 
+  const mod = room.modifier || MODIFIERS[0];
+
   // spawn waves — more players alive means enemies spawn faster (sqrt curve keeps duo play fair)
-  const minute = room.elapsed / 60;
+  const minute = effectiveMinute(room);
   const diff = DIFFICULTY[room.difficulty] || DIFFICULTY.normal;
   const baseInterval = Math.max(0.4, 1.8 - minute * 0.14) / diff.spawn;
   const spawnInterval = baseInterval / Math.sqrt(alivePlayers.length);
@@ -301,6 +364,27 @@ function tickRoom(room) {
     }
   }
 
+  // traveling merchant
+  if (!room.merchant) {
+    room.merchantTimer -= dt;
+    if (room.merchantTimer <= 0) {
+      room.merchantTimer = MERCHANT_INTERVAL;
+      const anchor = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 120 + Math.random() * 80;
+      const offers = [...MERCHANT_ITEMS].sort(() => Math.random() - 0.5).slice(0, 3).map((it) => ({ id: it.id, cost: it.cost }));
+      room.merchant = {
+        x: Math.max(40, Math.min(WORLD_W - 40, anchor.x + Math.cos(angle) * dist)),
+        y: Math.max(40, Math.min(WORLD_H - 40, anchor.y + Math.sin(angle) * dist)),
+        expires: MERCHANT_DURATION,
+        offers,
+      };
+    }
+  } else {
+    room.merchant.expires -= dt;
+    if (room.merchant.expires <= 0) room.merchant = null;
+  }
+
   // move players
   for (const p of room.players.values()) {
     if (!p.alive) continue;
@@ -312,7 +396,9 @@ function tickRoom(room) {
       p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_H - PLAYER_RADIUS, p.y + ny * p.speed * dt));
     }
     if (p.invuln > 0) p.invuln -= dt;
-    if (p.regen > 0) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
+    if (p.skillCooldown > 0) p.skillCooldown -= TICK_MS;
+    const regen = p.regen + mod.regenBonus;
+    if (regen > 0) p.hp = Math.min(p.maxHp, p.hp + regen * dt);
   }
 
   // ally synergy: standing near another living ally grants a damage buff to both
@@ -449,13 +535,17 @@ function tickRoom(room) {
     return true;
   });
 
-  // remove dead enemies -> spawn xp orbs (+ exploders burst nearby players, world bosses drop a relic)
+  // remove dead enemies -> spawn xp/gold orbs (+ exploders burst nearby players, world bosses drop a relic)
   const survivors = [];
   for (const e of room.enemies) {
     if (e.hp <= 0) {
-      room.orbs.push({ id: room.nextOrbId++, x: e.x, y: e.y, value: e.worldBoss ? 120 : (e.elite ? 25 : 8) });
+      room.orbs.push({ id: room.nextOrbId++, x: e.x, y: e.y, value: Math.round((e.worldBoss ? 120 : (e.elite ? 25 : 8)) * mod.xpMult) });
       if (e.worldBoss) {
         room.orbs.push({ id: room.nextOrbId++, x: e.x + 14, y: e.y + 14, value: 0, relic: true });
+      }
+      const goldAmount = e.worldBoss ? 30 : (e.elite ? 10 : (Math.random() < 0.2 * mod.goldMult ? Math.round(3 * mod.goldMult) : 0));
+      if (goldAmount > 0) {
+        room.orbs.push({ id: room.nextOrbId++, x: e.x - 10, y: e.y + 10, value: 0, gold: goldAmount });
       }
       const owner = alivePlayers[0];
       if (owner) {
@@ -501,6 +591,10 @@ function tickRoom(room) {
           io.to(p.id).emit('relicPickup', p.relicCount);
           return false;
         }
+        if (orb.gold) {
+          p.gold += orb.gold;
+          return false;
+        }
         p.xp += orb.value;
         let needed = xpForLevel(p.level);
         while (p.xp >= needed) {
@@ -522,11 +616,16 @@ function serializeRoom(room) {
     started: room.started,
     gameOver: room.gameOver,
     difficulty: room.difficulty,
+    modifier: room.modifier ? room.modifier.id : 'none',
+    night: isNight(room),
+    endless: room.elapsed >= ENDLESS_THRESHOLD,
     elapsed: room.elapsed,
     players: [...room.players.values()].map((p) => ({
       id: p.id, name: p.name, x: p.x, y: p.y, hp: p.hp, maxHp: p.maxHp,
       level: p.level, xp: p.xp, xpNeeded: xpForLevel(p.level), alive: p.alive,
-      pendingLevelUp: p.pendingLevelUp, kills: p.kills, eliteKills: p.eliteKills, worldBossKills: p.worldBossKills, weapon: p.weapon,
+      pendingLevelUp: p.pendingLevelUp, kills: p.kills, eliteKills: p.eliteKills, worldBossKills: p.worldBossKills,
+      weapon: p.weapon, playerClass: p.playerClass, gold: p.gold,
+      skillCooldown: p.skillCooldown, skillCooldownMax: p.skillCooldownMax,
       evolved: p.evolved, reviveProgress: p.reviveProgress, synergyActive: p.synergyActive,
     })),
     enemies: room.enemies.map((e) => ({
@@ -534,8 +633,9 @@ function serializeRoom(room) {
     })),
     projectiles: room.projectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y, ownerId: pr.ownerId })),
     enemyProjectiles: room.enemyProjectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
-    orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y, relic: o.relic })),
+    orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y, relic: o.relic, gold: o.gold })),
     treasure: room.treasure ? { x: room.treasure.x, y: room.treasure.y, progress: room.treasure.progress, required: TREASURE_REQUIRED, timer: room.treasure.timer } : null,
+    merchant: room.merchant ? { x: room.merchant.x, y: room.merchant.y, expires: room.merchant.expires, offers: room.merchant.offers } : null,
   };
 }
 
@@ -543,6 +643,7 @@ io.on('connection', (socket) => {
   let currentRoomId = null;
 
   socket.emit('leaderboard', leaderboard);
+  socket.emit('enduranceLeaderboard', enduranceLeaderboard);
 
   // A socket must only ever be in one game room at a time — leave whatever
   // room it was previously in (e.g. from an earlier createRoom/joinRoom on
@@ -593,6 +694,15 @@ io.on('connection', (socket) => {
     broadcastLobby(room);
   });
 
+  socket.on('setClass', (classId) => {
+    const room = rooms.get(currentRoomId);
+    if (!room || room.started) return;
+    const p = room.players.get(socket.id);
+    if (!p || !CLASSES[classId]) return;
+    p.classChoice = classId;
+    broadcastLobby(room);
+  });
+
   socket.on('setRelics', (count) => {
     const room = rooms.get(currentRoomId);
     if (!room || room.started) return;
@@ -605,20 +715,37 @@ io.on('connection', (socket) => {
     const room = rooms.get(currentRoomId);
     if (room) {
       room.difficulty = DIFFICULTY[difficulty] ? difficulty : 'normal';
+      room.modifier = MODIFIERS[Math.floor(Math.random() * MODIFIERS.length)];
       for (const p of room.players.values()) {
         const w = WEAPONS[p.weaponChoice] || WEAPONS.hammer;
         p.weapon = p.weaponChoice;
         p.damage = Math.round(p.damage * w.dmg);
         p.attackCooldownMax = Math.round(p.attackCooldownMax / w.atkSpeed);
         p.attackRange = Math.round(p.attackRange * w.range);
+
+        const c = CLASSES[p.classChoice] || CLASSES.warrior;
+        p.playerClass = p.classChoice;
+        p.damage = Math.round(p.damage * c.dmgMult);
+        p.maxHp = Math.round(p.maxHp * c.hpMult);
+        p.hp = p.maxHp;
+        p.speed = Math.round(p.speed * c.speedMult);
+        p.skillCooldownMax = c.skillCooldownMax;
+        p.skillCooldown = 0;
+
         // relics are a light permanent-feeling bonus earned from past world-boss kills (client-tracked count)
         const relicMult = 1 + Math.min(0.3, p.relicCount * 0.01);
         p.damage = Math.round(p.damage * relicMult);
         p.maxHp = Math.round(p.maxHp * relicMult);
         p.hp = p.maxHp;
         p.speed = Math.round(p.speed * (1 + Math.min(0.15, p.relicCount * 0.005)));
+
+        const mod = room.modifier;
+        p.damage = Math.round(p.damage * mod.dmgMult);
+        p.maxHp = Math.round(p.maxHp * mod.hpMult);
+        p.hp = p.maxHp;
       }
       room.started = true;
+      io.to(room.id).emit('runModifier', room.modifier.id);
     }
   });
 
@@ -646,6 +773,59 @@ io.on('connection', (socket) => {
       }
     }
     p.pendingLevelUp = null;
+  });
+
+  socket.on('useSkill', () => {
+    const room = rooms.get(currentRoomId);
+    if (!room || !room.started || room.gameOver) return;
+    const p = room.players.get(socket.id);
+    if (!p || !p.alive || p.skillCooldown > 0) return;
+    const c = CLASSES[p.playerClass] || CLASSES.warrior;
+    p.skillCooldown = p.skillCooldownMax;
+
+    if (c.skill === 'bash') {
+      for (const e of room.enemies) {
+        if (distance(p.x, p.y, e.x, e.y) < BASH_RADIUS) {
+          e.hp -= p.damage * 2.5;
+        }
+      }
+      io.to(room.id).emit('skillEffect', { type: 'bash', x: p.x, y: p.y, radius: BASH_RADIUS });
+    } else if (c.skill === 'volley') {
+      for (let i = 0; i < VOLLEY_COUNT; i++) {
+        const a = (Math.PI * 2 * i) / VOLLEY_COUNT;
+        room.projectiles.push({
+          id: room.nextProjId++,
+          x: p.x, y: p.y,
+          vx: Math.cos(a) * 460, vy: Math.sin(a) * 460,
+          damage: p.damage, pierce: p.piercing, ownerId: p.id, life: 1,
+        });
+      }
+      io.to(room.id).emit('skillEffect', { type: 'volley', x: p.x, y: p.y });
+    } else if (c.skill === 'heal') {
+      const healAmount = Math.round(p.maxHp * 0.3);
+      for (const ally of room.players.values()) {
+        if (ally.alive && distance(ally.x, ally.y, p.x, p.y) < HEAL_RADIUS) {
+          ally.hp = Math.min(ally.maxHp, ally.hp + healAmount);
+        }
+      }
+      io.to(room.id).emit('skillEffect', { type: 'heal', x: p.x, y: p.y, radius: HEAL_RADIUS });
+    }
+  });
+
+  socket.on('buyItem', (offerIndex) => {
+    const room = rooms.get(currentRoomId);
+    if (!room || !room.merchant) return;
+    const p = room.players.get(socket.id);
+    if (!p || !p.alive) return;
+    if (distance(p.x, p.y, room.merchant.x, room.merchant.y) > MERCHANT_RADIUS) return;
+    const offer = room.merchant.offers[offerIndex];
+    if (!offer || p.gold < offer.cost) return;
+    const item = MERCHANT_ITEMS.find((it) => it.id === offer.id);
+    if (!item) return;
+    p.gold -= offer.cost;
+    item.apply(p);
+    room.merchant.offers[offerIndex] = null;
+    io.to(p.id).emit('purchaseOk', offer.id);
   });
 
   socket.on('disconnect', () => {
