@@ -27,6 +27,9 @@ const merchantPanel = document.getElementById('merchantPanel');
 const merchantOffers = document.getElementById('merchantOffers');
 const weaponDescEl = document.getElementById('weaponDesc');
 const classDescEl = document.getElementById('classDesc');
+const bossBar = document.getElementById('bossBar');
+const bossBarName = document.getElementById('bossBarName');
+const bossBarFill = document.getElementById('bossBarFill');
 
 let myId = null;
 let latestState = null;
@@ -51,6 +54,7 @@ const SPRITES = {
   caster: loadSprite('/assets/enemy-caster.png'),
   exploder: loadSprite('/assets/enemy-exploder.png'),
   worldboss: loadSprite('/assets/enemy-worldboss.png'),
+  necromancer: loadSprite('/assets/enemy-necromancer.png'),
   weapon_hammer: loadSprite('/assets/weapon-hammer.png'),
   weapon_axe: loadSprite('/assets/weapon-axe.png'),
   weapon_sword: loadSprite('/assets/weapon-sword.png'),
@@ -60,6 +64,7 @@ const TILESET = loadSprite('/assets/tileset.png');
 const WORLD_SIZE = 2000; // must match server.js WORLD_W/WORLD_H
 const REVIVE_TIME = 5; // must match server.js REVIVE_TIME
 const POTION_HEAL_CLIENT = 30; // must match server.js POTION_HEAL
+const SLAM_TELEGRAPH_TIME_CLIENT = 1.2; // must match server.js SLAM_TELEGRAPH_TIME
 
 const minimapCanvas = document.getElementById('minimap');
 const minimapCtx = minimapCanvas.getContext('2d');
@@ -131,13 +136,63 @@ muteBtn.addEventListener('click', () => {
   muted = !muted;
   localStorage.setItem('vs_muted', muted ? '1' : '0');
   updateMuteBtn();
+  updateMusicMute();
 });
+
+// --- Background music (SubspaceAudio, CC0, via OpenGameArt) ---
+const music = {
+  gameplay: new Audio('/assets/music/gameplay.ogg'),
+  boss: new Audio('/assets/music/boss.ogg'),
+};
+music.gameplay.loop = true;
+music.boss.loop = true;
+music.gameplay.volume = 0.22;
+music.boss.volume = 0.28;
+let currentTrack = null;
+function updateMusicMute() {
+  music.gameplay.muted = muted;
+  music.boss.muted = muted;
+}
+updateMusicMute();
+function playTrack(name) {
+  if (currentTrack === name) return;
+  for (const key of Object.keys(music)) {
+    if (key !== name) music[key].pause();
+  }
+  currentTrack = name;
+  music[name].currentTime = 0;
+  music[name].play().catch(() => {}); // browsers block autoplay until a user gesture; harmless if it fails silently
+}
+function stopMusic() {
+  currentTrack = null;
+  music.gameplay.pause();
+  music.boss.pause();
+}
 
 const exitBtn = document.getElementById('exitBtn');
 exitBtn.addEventListener('click', () => {
   if (confirm(t('confirmExit'))) {
     location.reload();
   }
+});
+
+// --- Accessibility: reduce screen shake / motion effects ---
+let reduceMotion = localStorage.getItem('vs_reduce_motion') === '1';
+const motionBtn = document.getElementById('motionBtn');
+function updateMotionBtn() { motionBtn.style.opacity = reduceMotion ? '0.5' : '1'; }
+updateMotionBtn();
+motionBtn.addEventListener('click', () => {
+  reduceMotion = !reduceMotion;
+  localStorage.setItem('vs_reduce_motion', reduceMotion ? '1' : '0');
+  updateMotionBtn();
+});
+
+// --- First-time onboarding hint ---
+const onboardingOverlay = document.getElementById('onboardingOverlay');
+const onboardingBtn = document.getElementById('onboardingBtn');
+onboardingBtn.addEventListener('click', () => {
+  localStorage.setItem('vs_seen_onboarding', '1');
+  onboardingOverlay.classList.add('hidden');
 });
 
 // --- Language ---
@@ -216,6 +271,18 @@ const TRANSLATIONS = {
     classDesc_warrior: 'เลือดสูงสุด +25% เดินช้าลง 5% สกิล (Space): ฟันรอบตัวสร้างดาเมจ 2.5 เท่าใส่ศัตรูรอบตัว',
     classDesc_archer: 'เลือดสูงสุด -15% ดาเมจ +5% เดินเร็วขึ้น 10% สกิล (Space): ยิงกระสุน 10 ทิศทางรอบตัวทันที',
     classDesc_mage: 'เลือดสูงสุด -10% ดาเมจ -5% สกิล (Space): ฮีลตัวเองและเพื่อนในระยะใกล้ 30% ของเลือดสูงสุด',
+    newRecord: '🏆 สถิติส่วนตัวใหม่!',
+    statsBreakdown: (w, s) => `ดาเมจจากอาวุธ: ${w} | ดาเมจจากสกิล: ${s}`,
+    enemyName_wolf: '🐺 หมาป่า', enemyName_skeleton: '💀 โครงกระดูก', enemyName_caster: '🔮 นักเวท',
+    enemyName_exploder: '💥 เห็ดระเบิด', enemyName_necromancer: '🧙 ผู้เรียกวิญญาณ', enemyName_draugr: '☠️ ดราวเกอร์',
+    enemyName_worldboss: '🐉 เวิลด์บอส',
+    personalBestTitle: '⭐ สถิติส่วนตัวของคุณ',
+    personalBestText: (time, lvl, kills) => `เวลารอดสูงสุด: ${time} | เลเวลสูงสุด: ${lvl} | ฆ่าสูงสุด: ${kills}`,
+    noPersonalBest: 'ยังไม่มีสถิติ ลองเล่นดูสักตา!',
+    onboardingTitle: '🎮 วิธีเล่น',
+    onboardingText: 'ใช้ WASD หรือลูกศรเดิน (จอยสติ๊กบนมือถือ), กด Space ใช้สกิลประจำตัว (ปุ่ม ✨ บนมือถือ), ตีศัตรูอัตโนมัติเมื่อเข้าใกล้',
+    onboardingBtn: 'เข้าใจแล้ว เริ่มเลย!',
+    reduceMotionLabel: 'ลดเอฟเฟกต์กระตุกจอ',
   },
   en: {
     subtitle: 'Survive the draugr horde as long as you can. Team up with friends!',
@@ -291,6 +358,18 @@ const TRANSLATIONS = {
     classDesc_warrior: '+25% max HP, 5% slower. Skill (Space): melee smash hits all enemies nearby for 2.5x damage.',
     classDesc_archer: '-15% max HP, +5% damage, 10% faster. Skill (Space): instantly fire 10 shots in all directions.',
     classDesc_mage: '-10% max HP, -5% damage. Skill (Space): heal yourself and nearby allies for 30% of max HP.',
+    newRecord: '🏆 New personal best!',
+    statsBreakdown: (w, s) => `Weapon damage: ${w} | Skill damage: ${s}`,
+    enemyName_wolf: '🐺 Wolf', enemyName_skeleton: '💀 Skeleton', enemyName_caster: '🔮 Caster',
+    enemyName_exploder: '💥 Exploder', enemyName_necromancer: '🧙 Necromancer', enemyName_draugr: '☠️ Draugr',
+    enemyName_worldboss: '🐉 World Boss',
+    personalBestTitle: '⭐ Your Personal Best',
+    personalBestText: (time, lvl, kills) => `Longest survival: ${time} | Highest level: ${lvl} | Most kills: ${kills}`,
+    noPersonalBest: 'No record yet — play a run first!',
+    onboardingTitle: '🎮 How to Play',
+    onboardingText: 'Move with WASD or arrow keys (on-screen joystick on mobile), press Space to use your skill (✨ button on mobile), enemies get hit automatically when you get close.',
+    onboardingBtn: "Got it, let's go!",
+    reduceMotionLabel: 'Reduce screen shake',
   },
 };
 const UPGRADE_TEXT = {
@@ -327,6 +406,16 @@ function applyTranslations() {
   langBtn.textContent = lang === 'th' ? 'EN' : 'TH';
   if (typeof updateWeaponDesc === 'function') updateWeaponDesc();
   if (typeof updateClassDesc === 'function') updateClassDesc();
+  if (typeof renderPersonalBest === 'function') renderPersonalBest();
+}
+function renderPersonalBest() {
+  const el = document.getElementById('personalBestText');
+  const best = JSON.parse(localStorage.getItem('vs_personal_best') || '{}');
+  if (!best.bestTime) {
+    el.textContent = t('noPersonalBest');
+    return;
+  }
+  el.textContent = t('personalBestText', formatTime(best.bestTime), best.bestLevel || 0, best.bestKills || 0);
 }
 const langBtn = document.getElementById('langBtn');
 langBtn.addEventListener('click', () => {
@@ -624,13 +713,14 @@ function spawnParticles(x, y, color, count, speed, life) {
 }
 
 function triggerShake(magnitude, time) {
+  if (reduceMotion) return;
   shake.magnitude = Math.max(shake.magnitude, magnitude);
   shake.time = Math.max(shake.time, time);
 }
 
 const ENEMY_PARTICLE_COLOR = {
   wolf: '#c0c8d8', skeleton: '#e8e0c8', draugr: '#7ada7a',
-  caster: '#8a7ad8', exploder: '#f0a040', worldboss: '#c060e0',
+  caster: '#8a7ad8', exploder: '#f0a040', worldboss: '#c060e0', necromancer: '#b070f0',
 };
 
 // --- Game state updates ---
@@ -652,13 +742,16 @@ socket.on('state', (state) => {
     waitingRoom.classList.add('hidden');
     gameScreen.classList.remove('hidden');
     exitBtn.classList.remove('hidden');
+    playTrack('gameplay');
+    if (!localStorage.getItem('vs_seen_onboarding')) onboardingOverlay.classList.remove('hidden');
   }
   playerCount.textContent = t('playerCount', state.players.length);
   if (roomStarted) {
     updateHud(state);
     checkAchievements(state);
+    if (!state.gameOver) playTrack(state.enemies.some((e) => e.worldBoss) ? 'boss' : 'gameplay');
   }
-  if (state.gameOver) showGameOver(state);
+  if (state.gameOver) { showGameOver(state); stopMusic(); }
 });
 
 function diffEffects(oldState, newState) {
@@ -689,7 +782,7 @@ function diffEffects(oldState, newState) {
       spawnDamageNumber(p.x, p.y, old.hp - p.hp, '#e06060', false);
       if (p.id === myId) {
         triggerShake(8, 0.25);
-        damageFlash = 0.35;
+        damageFlash = reduceMotion ? 0.15 : 0.35;
         playSfx('damage', { volume: 0.45 });
       }
     }
@@ -1028,8 +1121,19 @@ function render() {
 
   if (!latestState || !roomStarted) return;
   buildInterpMaps(now);
-  const meRaw = latestState.players.find((p) => p.id === myId) || latestState.players[0];
-  const me = meRaw ? { ...meRaw, ...ipos(meRaw, 'players') } : null;
+  const selfRaw = latestState.players.find((p) => p.id === myId) || latestState.players[0];
+  // While downed and waiting to be revived, follow the nearest living ally instead of
+  // staring at an empty death spot — much easier to keep track of the fight.
+  let camTargetRaw = selfRaw;
+  if (selfRaw && !selfRaw.alive) {
+    const allies = latestState.players.filter((p) => p.alive && p.id !== selfRaw.id);
+    if (allies.length > 0) {
+      camTargetRaw = allies.reduce((best, p) => (
+        distanceClient(selfRaw.x, selfRaw.y, p.x, p.y) < distanceClient(selfRaw.x, selfRaw.y, best.x, best.y) ? p : best
+      ), allies[0]);
+    }
+  }
+  const me = camTargetRaw ? { ...camTargetRaw, ...ipos(camTargetRaw, 'players') } : null;
   const shakeX = shake.time > 0 ? (Math.random() - 0.5) * shake.magnitude : 0;
   const shakeY = shake.time > 0 ? (Math.random() - 0.5) * shake.magnitude : 0;
   const cam = me ? { x: me.x - shakeX, y: me.y - shakeY } : { x: 1000, y: 1000 };
@@ -1163,6 +1267,7 @@ function render() {
   const ENEMY_SPRITE = {
     wolf: SPRITES.wolf, skeleton: SPRITES.skeleton, draugr: SPRITES.draugr,
     caster: SPRITES.caster, exploder: SPRITES.exploder, worldboss: SPRITES.worldboss,
+    necromancer: SPRITES.necromancer,
   };
   for (const e of latestState.enemies) {
     const ep = ipos(e, 'enemies');
@@ -1181,6 +1286,21 @@ function render() {
       ctx.beginPath(); ctx.arc(s.x, s.y, auraR, 0, Math.PI * 2); ctx.stroke();
       ctx.strokeStyle = `rgba(${auraColor},0.3)`;
       ctx.beginPath(); ctx.arc(s.x, s.y, auraR + 8, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
+    if (e.slamTelegraph) {
+      const tg = e.slamTelegraph;
+      const tgs = worldToScreen(tg.x, tg.y, cam);
+      const progress = Math.max(0, Math.min(1, 1 - (tg.triggerAt - latestState.elapsed) / SLAM_TELEGRAPH_TIME_CLIENT));
+      ctx.save();
+      ctx.globalAlpha = 0.15 + progress * 0.35;
+      ctx.fillStyle = '#e04040';
+      ctx.beginPath(); ctx.arc(tgs.x, tgs.y, tg.radius, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.6 + 0.3 * Math.sin(now / 80);
+      ctx.strokeStyle = '#ff6060';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(tgs.x, tgs.y, tg.radius, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     }
 
@@ -1369,6 +1489,15 @@ function updateHud(state) {
     </div>
   `).join('');
 
+  const boss = state.enemies.filter((e) => e.elite).sort((a, b) => (b.worldBoss ? 1 : 0) - (a.worldBoss ? 1 : 0))[0];
+  if (boss) {
+    bossBar.classList.remove('hidden');
+    bossBarName.textContent = (boss.worldBoss ? '☠ ' : '') + (boss.name || '') + (boss.worldBoss ? ' ☠' : '');
+    bossBarFill.style.width = `${Math.max(0, (boss.hp / boss.maxHp) * 100)}%`;
+  } else {
+    bossBar.classList.add('hidden');
+  }
+
   const me = state.players.find((p) => p.id === myId);
 
   if (me) {
@@ -1430,6 +1559,16 @@ function updateHud(state) {
   }
 }
 
+function updatePersonalBest(me, elapsed) {
+  const best = JSON.parse(localStorage.getItem('vs_personal_best') || '{}');
+  const isNewRecord = !best.bestTime || elapsed > best.bestTime;
+  best.bestTime = Math.max(best.bestTime || 0, elapsed);
+  best.bestLevel = Math.max(best.bestLevel || 0, me.level);
+  best.bestKills = Math.max(best.bestKills || 0, me.kills);
+  localStorage.setItem('vs_personal_best', JSON.stringify(best));
+  return isNewRecord;
+}
+
 function showGameOver(state) {
   upgradeOverlay.classList.add('hidden');
   if (!gameOverOverlay.classList.contains('hidden')) return;
@@ -1437,4 +1576,15 @@ function showGameOver(state) {
   playSfx('gameover', { volume: 0.5 });
   gameOverStats.innerHTML = t('survived', formatTime(state.elapsed)) + '<br/>' +
     state.players.map((p) => t('levelKills', p.name, p.level, p.kills)).join('<br/>');
+
+  const me = state.players.find((p) => p.id === myId);
+  if (me) {
+    const isRecord = updatePersonalBest(me, state.elapsed);
+    if (isRecord) gameOverStats.innerHTML += `<br/><span style="color:#f0d060">${t('newRecord')}</span>`;
+    const killsByTypeStr = Object.entries(me.killsByType || {})
+      .map(([type, n]) => `${t('enemyName_' + type)} ${n}`)
+      .join(', ');
+    gameOverStats.innerHTML += `<br/><span class="desc-text">${t('statsBreakdown', me.weaponDamageDealt || 0, me.skillDamageDealt || 0)}</span>`;
+    if (killsByTypeStr) gameOverStats.innerHTML += `<br/><span class="desc-text">${killsByTypeStr}</span>`;
+  }
 }

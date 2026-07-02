@@ -175,13 +175,16 @@ button:hover { filter: brightness(1.1); }
 #statsPanel .bar-fill { height: 100%; background: #c0392b; }
 #statsPanel .xp-fill { height: 100%; background: #3aa0d4; }
 
-#upgradeOverlay, #gameOverOverlay {
+#upgradeOverlay, #gameOverOverlay, #onboardingOverlay {
   position: fixed; inset: 0;
   background: rgba(5,7,12,0.88);
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
   gap: 16px;
 }
+#onboardingOverlay { z-index: 40; text-align: center; padding: 20px; }
+#onboardingOverlay h2 { color: #f0d060; text-shadow: 0 0 16px rgba(240,208,96,0.7); }
+#onboardingOverlay p { max-width: 480px; color: #cfd6ea; line-height: 1.6; }
 #upgradeOverlay h2 {
   color: #f0d060;
   text-shadow: 0 0 16px rgba(240,208,96,0.7);
@@ -290,3 +293,34 @@ button:hover { filter: brightness(1.1); }
 }
 .merchant-offer:hover { border-color: #f0d060; }
 .merchant-offer:disabled { opacity: 0.4; cursor: default; }
+
+#bossBar {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  width: min(420px, 70vw);
+  text-align: center;
+  pointer-events: none;
+}
+#bossBarName {
+  color: #e06060;
+  font-weight: bold;
+  font-size: 0.95em;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.8);
+  margin-bottom: 3px;
+}
+#bossBarTrack {
+  height: 14px;
+  background: rgba(20,10,10,0.7);
+  border: 1px solid #7a3030;
+  border-radius: 7px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+}
+#bossBarFill {
+  height: 100%;
+  background: linear-gradient(90deg, #e06060, #ff8a4a);
+  transition: width 0.15s linear;
+}

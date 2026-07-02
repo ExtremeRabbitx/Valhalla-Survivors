@@ -40,6 +40,10 @@ const MAX_ENEMIES = 180; // hard cap so long games don't slow to a crawl as enem
 const POWERUP_CHANCE = 0.06; // chance a regular kill drops a temporary power-up instead of nothing extra
 const POWERUP_DURATION = 8; // seconds a speed/damage boost lasts
 const POTION_HEAL = 30;
+const SLAM_COOLDOWN = 7; // seconds between world boss ground slams
+const SLAM_TELEGRAPH_TIME = 1.2; // seconds of warning before the slam actually lands
+const SLAM_RADIUS = 140;
+const NECRO_SUMMON_COOLDOWN = 6000; // ms between a necromancer summoning a minion
 
 const UPGRADES = [
   { id: 'damage', label: '⚔️ เพิ่มดาเมจ', apply: (p) => { p.damage += 4; } },
@@ -133,6 +137,9 @@ function makePlayer(id, name) {
     kills: 0,
     eliteKills: 0,
     worldBossKills: 0,
+    killsByType: {},
+    weaponDamageDealt: 0,
+    skillDamageDealt: 0,
     upgradeCounts: {},
     evolved: false,
     piercing: 0,
@@ -187,10 +194,11 @@ function createRoom() {
 }
 
 const NON_ELITE_TYPES = [
-  { type: 'wolf', weight: 0.4 },
-  { type: 'skeleton', weight: 0.35 },
-  { type: 'caster', weight: 0.15 },
-  { type: 'exploder', weight: 0.1 },
+  { type: 'wolf', weight: 0.37 },
+  { type: 'skeleton', weight: 0.32 },
+  { type: 'caster', weight: 0.14 },
+  { type: 'exploder', weight: 0.09 },
+  { type: 'necromancer', weight: 0.08 },
 ];
 function pickEnemyType() {
   const r = Math.random();
@@ -205,8 +213,8 @@ function pickEnemyType() {
 // Distinct attack profiles per enemy type instead of one flat damage number for everything —
 // wolves are fast but hit soft, skeletons hit hard and slow, exploders barely melee (their
 // real damage is the death burst), casters/draugr/worldboss keep their existing multipliers.
-const ENEMY_DAMAGE_MULT = { wolf: 0.75, skeleton: 1.3, caster: 0.9, exploder: 0.5, draugr: 1, worldboss: 1 };
-const ENEMY_SPEED_MULT = { wolf: 1.15, skeleton: 0.9, caster: 1, exploder: 1, draugr: 1, worldboss: 1 };
+const ENEMY_DAMAGE_MULT = { wolf: 0.75, skeleton: 1.3, caster: 0.9, exploder: 0.5, necromancer: 0.4, draugr: 1, worldboss: 1 };
+const ENEMY_SPEED_MULT = { wolf: 1.15, skeleton: 0.9, caster: 1, exploder: 1, necromancer: 0.85, draugr: 1, worldboss: 1 };
 
 // After ENDLESS_THRESHOLD, difficulty growth accelerates so the run never truly plateaus.
 function effectiveMinute(room) {
@@ -252,10 +260,40 @@ function spawnEnemy(room, opts = {}) {
     name: (isElite || isWorldBoss) ? nextBossName(isWorldBoss) : null,
     type,
     attackCooldown: 0,
+    summonCooldown: NECRO_SUMMON_COOLDOWN,
+    slamCooldown: SLAM_COOLDOWN,
+    slamTelegraph: null,
   };
   room.enemies.push(enemy);
   if (isWorldBoss) room.worldBossAlive = true;
   return enemy;
+}
+
+// A necromancer's summon is a weaker, un-targeted skeleton conjured right at its side —
+// deliberately bypasses spawnEnemy's normal "spawn far away and walk in" placement.
+function summonMinion(room, atX, atY) {
+  if (room.enemies.length >= MAX_ENEMIES) return;
+  const minute = effectiveMinute(room);
+  const diff = DIFFICULTY[room.difficulty] || DIFFICULTY.normal;
+  const mod = room.modifier || MODIFIERS[0];
+  const angle = Math.random() * Math.PI * 2;
+  const x = Math.max(20, Math.min(WORLD_W - 20, atX + Math.cos(angle) * 40));
+  const y = Math.max(20, Math.min(WORLD_H - 20, atY + Math.sin(angle) * 40));
+  const hp = Math.round((15 + minute * 8) * diff.hp * mod.enemyHpMult * 0.5);
+  room.enemies.push({
+    id: room.nextEnemyId++,
+    x, y, hp, maxHp: hp,
+    speed: (60 + Math.random() * 20 + minute * 2) * ENEMY_SPEED_MULT.skeleton,
+    damage: Math.round((4 + minute * 1.5) * diff.damage * ENEMY_DAMAGE_MULT.skeleton * 0.6),
+    elite: false,
+    worldBoss: false,
+    name: null,
+    type: 'skeleton',
+    attackCooldown: 0,
+    summonCooldown: NECRO_SUMMON_COOLDOWN,
+    slamCooldown: SLAM_COOLDOWN,
+    slamTelegraph: null,
+  });
 }
 
 const BOSS_NAMES = ['ShennyS', 'POND', 'POOMPAE', 'RIPRY'];
@@ -463,6 +501,7 @@ function tickRoom(room) {
         if (targets.length > 0) {
           const dmg = Math.round(p.damage * 0.8 * p.lightningLevel);
           for (const t of targets) t.e.hp -= dmg;
+          p.skillDamageDealt += dmg * targets.length;
           io.to(room.id).emit('skillEffect', { type: 'lightning', x: p.x, y: p.y, targets: targets.map((t) => ({ x: t.e.x, y: t.e.y })) });
         }
       }
@@ -471,7 +510,7 @@ function tickRoom(room) {
       const radius = 70 + p.fireAuraLevel * 15;
       const dps = 3 + p.fireAuraLevel * 2;
       for (const e of room.enemies) {
-        if (distance(p.x, p.y, e.x, e.y) < radius) e.hp -= dps * dt;
+        if (distance(p.x, p.y, e.x, e.y) < radius) { e.hp -= dps * dt; p.skillDamageDealt += dps * dt; }
       }
     }
     if (p.frostNovaLevel > 0) {
@@ -485,6 +524,7 @@ function tickRoom(room) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
             e.hp -= dmg;
             e.slowUntil = room.elapsed + 2.5;
+            p.skillDamageDealt += dmg;
             hit = true;
           }
         }
@@ -528,6 +568,43 @@ function tickRoom(room) {
         });
       }
       continue;
+    }
+
+    if (e.type === 'necromancer') {
+      const preferredRange = 220;
+      if (best > preferredRange + 20) {
+        e.x += (dx / len) * eSpeed * dt;
+        e.y += (dy / len) * eSpeed * dt;
+      } else if (best < preferredRange - 20) {
+        e.x -= (dx / len) * eSpeed * dt * 0.6;
+        e.y -= (dy / len) * eSpeed * dt * 0.6;
+      }
+      e.summonCooldown -= TICK_MS;
+      if (e.summonCooldown <= 0) {
+        e.summonCooldown = NECRO_SUMMON_COOLDOWN;
+        summonMinion(room, e.x, e.y);
+      }
+      continue;
+    }
+
+    if (e.worldBoss) {
+      if (e.slamTelegraph) {
+        if (room.elapsed >= e.slamTelegraph.triggerAt) {
+          for (const p of alivePlayers) {
+            if (distance(p.x, p.y, e.slamTelegraph.x, e.slamTelegraph.y) < e.slamTelegraph.radius) {
+              p.hp -= e.damage * 1.8;
+              if (p.hp <= 0) { p.hp = 0; p.alive = false; }
+            }
+          }
+          e.slamTelegraph = null;
+          e.slamCooldown = SLAM_COOLDOWN;
+        }
+      } else {
+        e.slamCooldown -= dt;
+        if (e.slamCooldown <= 0) {
+          e.slamTelegraph = { x: e.x, y: e.y, radius: SLAM_RADIUS, triggerAt: room.elapsed + SLAM_TELEGRAPH_TIME };
+        }
+      }
     }
 
     e.x += (dx / len) * eSpeed * dt;
@@ -600,6 +677,11 @@ function tickRoom(room) {
     for (const e of room.enemies) {
       if (distance(pr.x, pr.y, e.x, e.y) < ENEMY_RADIUS + 6) {
         e.hp -= pr.damage;
+        const owner = room.players.get(pr.ownerId);
+        if (owner) {
+          if (pr.isSkill) owner.skillDamageDealt += pr.damage;
+          else owner.weaponDamageDealt += pr.damage;
+        }
         if (pr.pierce > 0) { pr.pierce -= 1; continue; }
         return false;
       }
@@ -629,6 +711,7 @@ function tickRoom(room) {
         owner.kills += 1;
         if (e.elite) owner.eliteKills += 1;
         if (e.worldBoss) owner.worldBossKills += 1;
+        owner.killsByType[e.type] = (owner.killsByType[e.type] || 0) + 1;
       }
       if (e.type === 'exploder') {
         const burstDmg = Math.round(15 * (DIFFICULTY[room.difficulty] || DIFFICULTY.normal).damage);
@@ -713,9 +796,11 @@ function serializeRoom(room) {
       evolved: p.evolved, reviveProgress: p.reviveProgress, synergyActive: p.synergyActive,
       speedBoostActive: room.elapsed < p.speedBoostUntil, damageBoostActive: room.elapsed < p.damageBoostUntil,
       fireAuraLevel: p.fireAuraLevel,
+      weaponDamageDealt: Math.round(p.weaponDamageDealt), skillDamageDealt: Math.round(p.skillDamageDealt), killsByType: p.killsByType,
     })),
     enemies: room.enemies.map((e) => ({
       id: e.id, x: e.x, y: e.y, hp: e.hp, maxHp: e.maxHp, type: e.type, elite: e.elite, worldBoss: e.worldBoss, name: e.name,
+      slamTelegraph: e.slamTelegraph,
     })),
     projectiles: room.projectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y, ownerId: pr.ownerId })),
     enemyProjectiles: room.enemyProjectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
@@ -870,9 +955,11 @@ io.on('connection', (socket) => {
     p.skillCooldown = p.skillCooldownMax;
 
     if (c.skill === 'bash') {
+      const bashDmg = p.damage * 2.5;
       for (const e of room.enemies) {
         if (distance(p.x, p.y, e.x, e.y) < BASH_RADIUS) {
-          e.hp -= p.damage * 2.5;
+          e.hp -= bashDmg;
+          p.skillDamageDealt += bashDmg;
         }
       }
       io.to(room.id).emit('skillEffect', { type: 'bash', x: p.x, y: p.y, radius: BASH_RADIUS });
@@ -883,7 +970,7 @@ io.on('connection', (socket) => {
           id: room.nextProjId++,
           x: p.x, y: p.y,
           vx: Math.cos(a) * 460, vy: Math.sin(a) * 460,
-          damage: p.damage, pierce: p.piercing, ownerId: p.id, life: 1,
+          damage: p.damage, pierce: p.piercing, ownerId: p.id, life: 1, isSkill: true,
         });
       }
       io.to(room.id).emit('skillEffect', { type: 'volley', x: p.x, y: p.y });

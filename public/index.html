@@ -10,6 +10,7 @@
 
 <div id="topControls">
   <button id="exitBtn" class="hidden" title="Exit">🚪</button>
+  <button id="motionBtn" title="Reduce screen shake">🌀</button>
   <button id="muteBtn" title="Mute">🔊</button>
   <button id="langBtn" title="Language">EN</button>
 </div>
@@ -30,6 +31,10 @@
 
   <p id="lobbyMsg" class="msg"></p>
 
+  <div id="leaderboardBox">
+    <h3 data-i18n="personalBestTitle">⭐ สถิติส่วนตัวของคุณ</h3>
+    <p id="personalBestText" class="desc-text"></p>
+  </div>
   <div id="leaderboardBox">
     <h3 data-i18n="leaderboardTitle">อันดับผู้รอดชีวิต</h3>
     <ol id="leaderboardList"></ol>
@@ -86,6 +91,15 @@
     <div id="statsPanel"></div>
   </div>
   <canvas id="minimap" width="140" height="140"></canvas>
+  <div id="bossBar" class="hidden">
+    <div id="bossBarName"></div>
+    <div id="bossBarTrack"><div id="bossBarFill"></div></div>
+  </div>
+  <div id="onboardingOverlay" class="hidden">
+    <h2 data-i18n="onboardingTitle">🎮 วิธีเล่น</h2>
+    <p data-i18n="onboardingText">ใช้ WASD หรือลูกศรเดิน (จอยสติ๊กบนมือถือ), กด Space ใช้สกิลประจำตัว (ปุ่ม ✨ บนมือถือ), ตีศัตรูอัตโนมัติเมื่อเข้าใกล้</p>
+    <button id="onboardingBtn" data-i18n="onboardingBtn">เข้าใจแล้ว เริ่มเลย!</button>
+  </div>
   <div id="upgradeOverlay" class="hidden">
     <h2 data-i18n="chooseUpgrade">เลือกพลังใหม่!</h2>
     <div id="upgradeChoices"></div>
