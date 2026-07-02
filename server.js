@@ -17,6 +17,16 @@ const XP_ORB_RADIUS = 8;
 const PLAYER_RADIUS = 16;
 const ENEMY_RADIUS = 14;
 const WORLD_BOSS_INTERVAL = 100; // seconds between guaranteed world bosses
+const REVIVE_RADIUS = 60;
+const REVIVE_TIME = 5; // seconds an ally must stand near a downed player
+const SYNERGY_RADIUS = 150;
+const SYNERGY_DAMAGE_MULT = 1.1;
+const EVENT_INTERVAL_MIN = 100;
+const EVENT_INTERVAL_MAX = 140;
+const TREASURE_RADIUS = 60;
+const TREASURE_REQUIRED = 6; // seconds of channeling to claim
+const TREASURE_TIMEOUT = 22; // seconds before it disappears unclaimed
+const EVOLVE_DAMAGE_UPGRADES = 5; // times 'damage' must be picked to evolve a weapon
 
 const UPGRADES = [
   { id: 'damage', label: '⚔️ เพิ่มดาเมจ', apply: (p) => { p.damage += 4; } },
@@ -56,6 +66,7 @@ function makePlayer(id, name) {
     name,
     weaponChoice: 'hammer',
     weapon: 'hammer',
+    relicCount: 0,
     x: WORLD_W / 2 + (Math.random() * 100 - 50),
     y: WORLD_H / 2 + (Math.random() * 100 - 50),
     dx: 0,
@@ -77,6 +88,12 @@ function makePlayer(id, name) {
     pendingLevelUp: null,
     kills: 0,
     eliteKills: 0,
+    worldBossKills: 0,
+    upgradeCounts: {},
+    evolved: false,
+    piercing: 0,
+    reviveProgress: 0,
+    synergyActive: false,
   };
 }
 
@@ -97,6 +114,7 @@ function createRoom() {
     projectiles: [],
     enemyProjectiles: [],
     orbs: [],
+    treasure: null,
     started: false,
     gameOver: false,
     leaderboardRecorded: false,
@@ -105,6 +123,7 @@ function createRoom() {
     spawnTimer: 0,
     worldBossTimer: WORLD_BOSS_INTERVAL,
     worldBossAlive: false,
+    eventTimer: EVENT_INTERVAL_MIN,
     nextEnemyId: 1,
     nextProjId: 1,
     nextOrbId: 1,
@@ -129,12 +148,13 @@ function pickEnemyType() {
   return 'wolf';
 }
 
-function spawnEnemy(room, forceWorldBoss) {
+function spawnEnemy(room, opts = {}) {
+  const { forceWorldBoss, forceType, atPlayer } = opts;
   const angle = Math.random() * Math.PI * 2;
   const dist = 700 + Math.random() * 200;
   const players = [...room.players.values()].filter((p) => p.alive);
-  if (players.length === 0) return;
-  const target = players[Math.floor(Math.random() * players.length)];
+  if (players.length === 0) return null;
+  const target = atPlayer || players[Math.floor(Math.random() * players.length)];
   const x = Math.max(20, Math.min(WORLD_W - 20, target.x + Math.cos(angle) * dist));
   const y = Math.max(20, Math.min(WORLD_H - 20, target.y + Math.sin(angle) * dist));
   const minute = room.elapsed / 60;
@@ -142,13 +162,13 @@ function spawnEnemy(room, forceWorldBoss) {
   // Co-op scaling: more players alive => enemies tankier so the fight stays a real fight,
   // but not linearly, so a duo isn't punished as hard as raw player-count math would suggest. Capped for larger groups.
   const coopScale = Math.min(2.6, 1 + 0.35 * (players.length - 1));
-  const isElite = !forceWorldBoss && Math.random() < Math.min(0.15, minute * 0.03);
+  const isElite = !forceWorldBoss && !forceType && Math.random() < Math.min(0.15, minute * 0.03);
   const isWorldBoss = !!forceWorldBoss;
-  const type = isWorldBoss ? 'worldboss' : (isElite ? 'draugr' : pickEnemyType());
+  const type = isWorldBoss ? 'worldboss' : (forceType || (isElite ? 'draugr' : pickEnemyType()));
   const eliteMult = isWorldBoss ? 16 : (isElite ? 4 : 1);
   const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * eliteMult);
   const speed = (60 + Math.random() * 20 + minute * 2) * (isElite || isWorldBoss ? 0.75 : 1);
-  room.enemies.push({
+  const enemy = {
     id: room.nextEnemyId++,
     x, y, hp, maxHp: hp,
     speed,
@@ -158,8 +178,10 @@ function spawnEnemy(room, forceWorldBoss) {
     name: (isElite || isWorldBoss) ? nextBossName(isWorldBoss) : null,
     type,
     attackCooldown: 0,
-  });
+  };
+  room.enemies.push(enemy);
   if (isWorldBoss) room.worldBossAlive = true;
+  return enemy;
 }
 
 const BOSS_NAMES = ['ShennyS', 'POND', 'POOMPAE', 'RIPRY'];
@@ -195,6 +217,31 @@ function recordLeaderboard(room) {
   io.emit('leaderboard', leaderboard);
 }
 
+function triggerWorldEvent(room, alivePlayers) {
+  const kind = Math.random() < 0.5 ? 'swarm' : 'treasure';
+  if (kind === 'swarm') {
+    const anchor = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+    const swarmType = Math.random() < 0.5 ? 'wolf' : 'skeleton';
+    for (let i = 0; i < 14; i++) {
+      spawnEnemy(room, { forceType: swarmType, atPlayer: anchor });
+    }
+  } else if (!room.treasure) {
+    const anchor = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 150 + Math.random() * 100;
+    room.treasure = {
+      x: Math.max(40, Math.min(WORLD_W - 40, anchor.x + Math.cos(angle) * dist)),
+      y: Math.max(40, Math.min(WORLD_H - 40, anchor.y + Math.sin(angle) * dist)),
+      progress: 0,
+      timer: TREASURE_TIMEOUT,
+    };
+    // a few guards spawn around the treasure to make claiming it a real fight
+    for (let i = 0; i < 4; i++) {
+      spawnEnemy(room, { forceType: 'wolf', atPlayer: { x: room.treasure.x, y: room.treasure.y } });
+    }
+  }
+}
+
 function tickRoom(room) {
   if (!room.started || room.gameOver) return;
   const dt = TICK_MS / 1000;
@@ -226,7 +273,31 @@ function tickRoom(room) {
     room.worldBossTimer -= dt;
     if (room.worldBossTimer <= 0) {
       room.worldBossTimer = WORLD_BOSS_INTERVAL;
-      spawnEnemy(room, true);
+      spawnEnemy(room, { forceWorldBoss: true });
+    }
+  }
+
+  // special world events (wolf swarm / treasure to defend)
+  room.eventTimer -= dt;
+  if (room.eventTimer <= 0) {
+    room.eventTimer = EVENT_INTERVAL_MIN + Math.random() * (EVENT_INTERVAL_MAX - EVENT_INTERVAL_MIN);
+    triggerWorldEvent(room, alivePlayers);
+  }
+
+  // treasure channel progress
+  if (room.treasure) {
+    const tr = room.treasure;
+    tr.timer -= dt;
+    const defenders = alivePlayers.filter((p) => distance(p.x, p.y, tr.x, tr.y) < TREASURE_RADIUS);
+    if (defenders.length > 0) tr.progress += dt;
+    if (tr.progress >= TREASURE_REQUIRED) {
+      for (let i = 0; i < 8; i++) {
+        const a = Math.random() * Math.PI * 2;
+        room.orbs.push({ id: room.nextOrbId++, x: tr.x + Math.cos(a) * 20, y: tr.y + Math.sin(a) * 20, value: 15 });
+      }
+      room.treasure = null;
+    } else if (tr.timer <= 0) {
+      room.treasure = null;
     }
   }
 
@@ -242,6 +313,28 @@ function tickRoom(room) {
     }
     if (p.invuln > 0) p.invuln -= dt;
     if (p.regen > 0) p.hp = Math.min(p.maxHp, p.hp + p.regen * dt);
+  }
+
+  // ally synergy: standing near another living ally grants a damage buff to both
+  for (const p of alivePlayers) {
+    p.synergyActive = alivePlayers.some((ally) => ally !== p && distance(ally.x, ally.y, p.x, p.y) < SYNERGY_RADIUS);
+  }
+
+  // revive downed teammates by standing near them
+  for (const p of room.players.values()) {
+    if (p.alive) continue;
+    const beingRevived = alivePlayers.some((ally) => distance(ally.x, ally.y, p.x, p.y) < REVIVE_RADIUS);
+    if (beingRevived) {
+      p.reviveProgress += dt;
+      if (p.reviveProgress >= REVIVE_TIME) {
+        p.alive = true;
+        p.hp = Math.round(p.maxHp * 0.5);
+        p.invuln = 1.5;
+        p.reviveProgress = 0;
+      }
+    } else {
+      p.reviveProgress = Math.max(0, p.reviveProgress - dt * 0.5);
+    }
   }
 
   // move enemies toward nearest player (casters keep their distance and shoot instead of meleeing)
@@ -320,6 +413,7 @@ function tickRoom(room) {
         .slice(0, p.projectileCount);
       if (targets.length > 0) {
         p.attackCooldown = p.attackCooldownMax;
+        const dmg = Math.round(p.damage * (p.synergyActive ? SYNERGY_DAMAGE_MULT : 1));
         for (const t of targets) {
           const dx = t.e.x - p.x;
           const dy = t.e.y - p.y;
@@ -329,7 +423,8 @@ function tickRoom(room) {
             x: p.x, y: p.y,
             vx: (dx / len) * 500,
             vy: (dy / len) * 500,
-            damage: p.damage,
+            damage: dmg,
+            pierce: p.piercing,
             ownerId: p.id,
             life: 1.2,
           });
@@ -338,7 +433,7 @@ function tickRoom(room) {
     }
   }
 
-  // move projectiles & collide
+  // move projectiles & collide (piercing projectiles from evolved weapons punch through multiple enemies)
   room.projectiles = room.projectiles.filter((pr) => {
     pr.x += pr.vx * dt;
     pr.y += pr.vy * dt;
@@ -347,21 +442,26 @@ function tickRoom(room) {
     for (const e of room.enemies) {
       if (distance(pr.x, pr.y, e.x, e.y) < ENEMY_RADIUS + 6) {
         e.hp -= pr.damage;
+        if (pr.pierce > 0) { pr.pierce -= 1; continue; }
         return false;
       }
     }
     return true;
   });
 
-  // remove dead enemies -> spawn xp orbs (+ exploders burst nearby players)
+  // remove dead enemies -> spawn xp orbs (+ exploders burst nearby players, world bosses drop a relic)
   const survivors = [];
   for (const e of room.enemies) {
     if (e.hp <= 0) {
       room.orbs.push({ id: room.nextOrbId++, x: e.x, y: e.y, value: e.worldBoss ? 120 : (e.elite ? 25 : 8) });
+      if (e.worldBoss) {
+        room.orbs.push({ id: room.nextOrbId++, x: e.x + 14, y: e.y + 14, value: 0, relic: true });
+      }
       const owner = alivePlayers[0];
       if (owner) {
         owner.kills += 1;
         if (e.elite) owner.eliteKills += 1;
+        if (e.worldBoss) owner.worldBossKills += 1;
       }
       if (e.type === 'exploder') {
         const burstDmg = Math.round(15 * (DIFFICULTY[room.difficulty] || DIFFICULTY.normal).damage);
@@ -394,7 +494,13 @@ function tickRoom(room) {
   }
   room.orbs = room.orbs.filter((orb) => {
     for (const p of alivePlayers) {
-      if (!p.pendingLevelUp && distance(orb.x, orb.y, p.x, p.y) < PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius) {
+      if (p.pendingLevelUp) continue;
+      if (distance(orb.x, orb.y, p.x, p.y) < PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius) {
+        if (orb.relic) {
+          p.relicCount += 1;
+          io.to(p.id).emit('relicPickup', p.relicCount);
+          return false;
+        }
         p.xp += orb.value;
         let needed = xpForLevel(p.level);
         while (p.xp >= needed) {
@@ -420,14 +526,16 @@ function serializeRoom(room) {
     players: [...room.players.values()].map((p) => ({
       id: p.id, name: p.name, x: p.x, y: p.y, hp: p.hp, maxHp: p.maxHp,
       level: p.level, xp: p.xp, xpNeeded: xpForLevel(p.level), alive: p.alive,
-      pendingLevelUp: p.pendingLevelUp, kills: p.kills, eliteKills: p.eliteKills, weapon: p.weapon,
+      pendingLevelUp: p.pendingLevelUp, kills: p.kills, eliteKills: p.eliteKills, worldBossKills: p.worldBossKills, weapon: p.weapon,
+      evolved: p.evolved, reviveProgress: p.reviveProgress, synergyActive: p.synergyActive,
     })),
     enemies: room.enemies.map((e) => ({
       id: e.id, x: e.x, y: e.y, hp: e.hp, maxHp: e.maxHp, type: e.type, elite: e.elite, worldBoss: e.worldBoss, name: e.name,
     })),
     projectiles: room.projectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y, ownerId: pr.ownerId })),
     enemyProjectiles: room.enemyProjectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
-    orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y })),
+    orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y, relic: o.relic })),
+    treasure: room.treasure ? { x: room.treasure.x, y: room.treasure.y, progress: room.treasure.progress, required: TREASURE_REQUIRED, timer: room.treasure.timer } : null,
   };
 }
 
@@ -485,6 +593,14 @@ io.on('connection', (socket) => {
     broadcastLobby(room);
   });
 
+  socket.on('setRelics', (count) => {
+    const room = rooms.get(currentRoomId);
+    if (!room || room.started) return;
+    const p = room.players.get(socket.id);
+    if (!p) return;
+    p.relicCount = Math.max(0, Math.min(50, Math.floor(count) || 0));
+  });
+
   socket.on('startGame', (difficulty) => {
     const room = rooms.get(currentRoomId);
     if (room) {
@@ -495,6 +611,12 @@ io.on('connection', (socket) => {
         p.damage = Math.round(p.damage * w.dmg);
         p.attackCooldownMax = Math.round(p.attackCooldownMax / w.atkSpeed);
         p.attackRange = Math.round(p.attackRange * w.range);
+        // relics are a light permanent-feeling bonus earned from past world-boss kills (client-tracked count)
+        const relicMult = 1 + Math.min(0.3, p.relicCount * 0.01);
+        p.damage = Math.round(p.damage * relicMult);
+        p.maxHp = Math.round(p.maxHp * relicMult);
+        p.hp = p.maxHp;
+        p.speed = Math.round(p.speed * (1 + Math.min(0.15, p.relicCount * 0.005)));
       }
       room.started = true;
     }
@@ -513,7 +635,16 @@ io.on('connection', (socket) => {
     const p = room.players.get(socket.id);
     if (!p || !p.pendingLevelUp) return;
     const choice = UPGRADES.find((u) => u.id === upgradeId);
-    if (choice) choice.apply(p);
+    if (choice) {
+      choice.apply(p);
+      p.upgradeCounts[upgradeId] = (p.upgradeCounts[upgradeId] || 0) + 1;
+      if (!p.evolved && upgradeId === 'damage' && p.upgradeCounts.damage >= EVOLVE_DAMAGE_UPGRADES) {
+        p.evolved = true;
+        p.damage = Math.round(p.damage * 1.4);
+        p.piercing = 2;
+        io.to(p.id).emit('weaponEvolved');
+      }
+    }
     p.pendingLevelUp = null;
   });
 

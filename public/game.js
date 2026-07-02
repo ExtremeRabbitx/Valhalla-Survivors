@@ -24,6 +24,7 @@ const achievementToast = document.getElementById('achievementToast');
 let myId = null;
 let latestState = null;
 let roomStarted = false;
+let relicCount = parseInt(localStorage.getItem('vs_relics') || '0', 10);
 
 // --- Sprites (Kenney "Tiny Dungeon" / "Tiny Creatures", CC0) ---
 ctx.imageSmoothingEnabled = false;
@@ -48,6 +49,7 @@ const SPRITES = {
 };
 const TILESET = loadSprite('/assets/tileset.png');
 const WORLD_SIZE = 2000; // must match server.js WORLD_W/WORLD_H
+const REVIVE_TIME = 5; // must match server.js REVIVE_TIME
 
 const minimapCanvas = document.getElementById('minimap');
 const minimapCtx = minimapCanvas.getContext('2d');
@@ -69,6 +71,12 @@ function renderMinimap() {
   minimapCtx.arc((WORLD_SIZE / 2) * scale, (WORLD_SIZE / 2) * scale, 3, 0, Math.PI * 2);
   minimapCtx.fill();
 
+  if (latestState.treasure) {
+    minimapCtx.fillStyle = '#f0d060';
+    minimapCtx.beginPath();
+    minimapCtx.arc(latestState.treasure.x * scale, latestState.treasure.y * scale, 4, 0, Math.PI * 2);
+    minimapCtx.fill();
+  }
   for (const e of latestState.enemies) {
     minimapCtx.fillStyle = e.worldBoss ? '#c060e0' : (e.elite ? '#ff4040' : '#e06060');
     minimapCtx.beginPath();
@@ -153,6 +161,13 @@ const TRANSLATIONS = {
     achLevel10: '🏅 ถึงเลเวล 10!',
     achBoss: '🏅 ปราบบอส Fenrir/Jörmungandr/Surtr/Hel สำเร็จ!',
     achKills50: '🏅 กำจัดศัตรูครบ 50 ตัว!',
+    achMinibosses: '🏅 ปราบบอสประจำตัว ShennyS/POND/POOMPAE/RIPRY ครบ 4 คน!',
+    achEvolved: '🏅 วิวัฒน์อาวุธสำเร็จ!',
+    relicFound: (n) => `🏺 พบเรลิก! (สะสมแล้ว ${n} ชิ้น — เสริมพลังตอนเริ่มเกมครั้งต่อไป)`,
+    weaponEvolved: '✨ อาวุธของคุณวิวัฒน์แล้ว! ดาเมจแรงขึ้นและทะลุศัตรูได้',
+    relicLabel: (n) => `🏺 เรลิกที่สะสม: ${n}`,
+    treasureLabel: 'ปกป้องสมบัติ!',
+    reviveLabel: 'กำลังปลุก...',
   },
   en: {
     subtitle: 'Survive the draugr horde as long as you can. Team up with friends!',
@@ -190,6 +205,13 @@ const TRANSLATIONS = {
     achLevel10: '🏅 Reached level 10!',
     achBoss: '🏅 Defeated a world boss!',
     achKills50: '🏅 Defeated 50 enemies!',
+    achMinibosses: '🏅 Defeated all 4 named bosses (ShennyS/POND/POOMPAE/RIPRY)!',
+    achEvolved: '🏅 Evolved your weapon!',
+    relicFound: (n) => `🏺 Relic found! (${n} collected — boosts your next run)`,
+    weaponEvolved: '✨ Your weapon has evolved! More damage and it pierces enemies now',
+    relicLabel: (n) => `🏺 Relics collected: ${n}`,
+    treasureLabel: 'Defend the treasure!',
+    reviveLabel: 'Reviving...',
   },
 };
 const UPGRADE_TEXT = {
@@ -234,7 +256,23 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
-socket.on('connect', () => { myId = socket.id; });
+socket.on('connect', () => {
+  myId = socket.id;
+  socket.emit('setRelics', relicCount);
+});
+
+socket.on('relicPickup', (count) => {
+  relicCount = count;
+  localStorage.setItem('vs_relics', String(relicCount));
+  socket.emit('setRelics', relicCount);
+  toastQueue.push(t('relicFound', relicCount));
+  showNextToast();
+});
+
+socket.on('weaponEvolved', () => {
+  toastQueue.push(t('weaponEvolved'));
+  showNextToast();
+});
 
 // --- Lobby flow ---
 const params = new URLSearchParams(location.search);
@@ -266,6 +304,7 @@ function enterWaitingRoom(roomId) {
   roomCodeEl.textContent = roomId;
   const url = `${location.origin}${location.pathname}?room=${roomId}`;
   shareLink.value = url;
+  document.getElementById('relicDisplay').textContent = t('relicLabel', relicCount);
 }
 
 document.getElementById('copyBtn').addEventListener('click', () => {
@@ -328,8 +367,10 @@ function checkAchievements(state) {
   if (!me) return;
   if (state.elapsed >= 300) unlockAchievement('survive5', 'achSurvive5');
   if (me.level >= 10) unlockAchievement('level10', 'achLevel10');
-  if (me.eliteKills >= 4) unlockAchievement('boss', 'achBoss');
+  if (me.worldBossKills >= 1) unlockAchievement('boss', 'achBoss');
   if (me.kills >= 50) unlockAchievement('kills50', 'achKills50');
+  if (me.eliteKills >= 4) unlockAchievement('minibosses', 'achMinibosses');
+  if (me.evolved) unlockAchievement('evolved', 'achEvolved');
 }
 
 // --- Particles & juice ---
@@ -749,15 +790,44 @@ function render() {
     ctx.fillRect(s.x - 140, s.y - 140, 280, 280);
   }
 
-  // orbs (pulsing glow)
+  // orbs (pulsing glow) — relics glow gold instead of blue
   for (const o of latestState.orbs) {
     const s = worldToScreen(o.x, o.y, cam);
     const pulse = 1 + 0.2 * Math.sin(now / 150 + o.id);
     ctx.save();
-    ctx.shadowColor = '#3aa0d4';
-    ctx.shadowBlur = 10;
-    drawSprite(SPRITES.gem, s.x, s.y, 18 * pulse);
+    ctx.shadowColor = o.relic ? '#f0d060' : '#3aa0d4';
+    ctx.shadowBlur = o.relic ? 18 : 10;
+    drawSprite(SPRITES.gem, s.x, s.y, (o.relic ? 26 : 18) * pulse);
     ctx.restore();
+  }
+
+  // treasure event: a chest players must stand near to claim
+  if (latestState.treasure) {
+    const tr = latestState.treasure;
+    const s = worldToScreen(tr.x, tr.y, cam);
+    const pulse = 1 + 0.1 * Math.sin(now / 200);
+    ctx.save();
+    ctx.shadowColor = '#f0d060';
+    ctx.shadowBlur = 16;
+    ctx.font = `${34 * pulse}px serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('📦', s.x, s.y);
+    ctx.restore();
+    const ringR = 26;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(240,208,96,0.3)';
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(s.x, s.y, ringR, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#f0d060';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, ringR, -Math.PI / 2, -Math.PI / 2 + (tr.progress / tr.required) * Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = '#f0d060';
+    ctx.font = 'bold 13px Georgia';
+    ctx.textAlign = 'center';
+    ctx.fillText(t('treasureLabel'), s.x, s.y - 44);
   }
 
   // projectiles: spinning weapon matching each player's chosen loadout
@@ -846,10 +916,23 @@ function render() {
     const s = { x: base.x, y: base.y + bob };
     const facing = playerFacing.get(p.id) || 1;
     const walk = isMoving ? Math.sin(now / 90) : 0;
+
+    if (p.alive && p.synergyActive) {
+      ctx.save();
+      ctx.strokeStyle = `rgba(122,212,240,${0.35 + 0.15 * Math.sin(now / 250)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 24, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.save();
     if (p.id === myId) {
       ctx.shadowColor = '#d4af37';
       ctx.shadowBlur = 12;
+    }
+    if (p.evolved) {
+      ctx.shadowColor = '#c060e0';
+      ctx.shadowBlur = 16;
     }
     drawSprite(p.id === myId ? SPRITES.playerMe : SPRITES.playerOther, s.x, s.y, 34, {
       flip: facing, alpha: p.alive ? 1 : 0.3,
@@ -865,6 +948,21 @@ function render() {
     ctx.fillRect(s.x - w / 2, s.y + 16, w, 5);
     ctx.fillStyle = '#4caf50';
     ctx.fillRect(s.x - w / 2, s.y + 16, w * Math.max(0, p.hp / p.maxHp), 5);
+
+    if (!p.alive && p.reviveProgress > 0) {
+      const reviveFrac = Math.min(1, p.reviveProgress / REVIVE_TIME);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(76,175,80,0.3)';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 24, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = '#4caf50';
+      ctx.beginPath(); ctx.arc(s.x, s.y, 24, -Math.PI / 2, -Math.PI / 2 + reviveFrac * Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = '#4caf50';
+      ctx.font = 'bold 12px Georgia';
+      ctx.textAlign = 'center';
+      ctx.fillText(t('reviveLabel'), s.x, s.y - 40);
+    }
   }
 
   // level-up golden burst rings
