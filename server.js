@@ -45,6 +45,51 @@ const SLAM_TELEGRAPH_TIME = 1.2; // seconds of warning before the slam actually 
 const SLAM_RADIUS = 140;
 const NECRO_SUMMON_COOLDOWN = 6000; // ms between a necromancer summoning a minion
 
+// World boss signature attacks — a second attack per boss, on top of the shared slam, so the
+// 4 world bosses stop being reskins of each other.
+const SECOND_ATTACK_COOLDOWN = 9; // seconds between a boss's signature move
+const LUNGE_TELEGRAPH_TIME = 0.9; // Fenrir: warning before it teleports to the target and hits
+const LUNGE_RADIUS = 112;
+const LUNGE_SPEED_BOOST = 2.5; // seconds of bonus movement speed after a Fenrir lunge lands
+const SURTR_FAN_COUNT = 5;
+const HEL_SUMMON_COUNT = 3;
+
+// Ground hazard zones (fire/ice/poison patches) — shared by Jörmungandr's poison pool and the
+// night-time fire/ice patches below, since both are "damage anyone standing in this circle".
+const NIGHT_HAZARD_INTERVAL = 10; // seconds between new night patches (only ticks during night)
+const NIGHT_HAZARD_RADIUS = 80;
+const NIGHT_HAZARD_DURATION = 15;
+const NIGHT_HAZARD_FIRE_DPS = 9;
+const NIGHT_HAZARD_ICE_DPS = 3;
+const POISON_POOL_DURATION = 6;
+const POISON_POOL_DPS = 10;
+
+// Evolved-weapon signature procs — on top of the shared evolve bonus (+40% dmg, pierce+2)
+const AXE_BLEED_DURATION = 2;
+const AXE_BLEED_DMG_FRACTION = 0.25; // bleed dps = weapon damage * this
+const SWORD_CLEAVE_RADIUS = 55;
+const SWORD_CLEAVE_FRACTION = 0.3; // cleave damage = hit damage * this
+const HAMMER_STAGGER_DURATION = 0.6; // reuses the same slow field frost nova uses
+
+// Kill-streak frenzy — rewards continuous killing, hard-resets if the player stops killing,
+// so standing still/AFK-farming loses the buff fast instead of being free.
+const FRENZY_MAX_STACKS = 6;
+const FRENZY_DECAY_WINDOW = 3; // seconds without a kill before all stacks are lost
+const FRENZY_DAMAGE_PER_STACK = 0.06;
+const FRENZY_ATKSPEED_PER_STACK = 0.05;
+const FRENZY_ATKSPEED_CAP = 0.3;
+
+// Interactive altar — periodically activates at the world center; players must channel nearby
+// to trigger a random room-wide blessing or curse. Mirrors the treasure-channel pattern.
+const ALTAR_INTERVAL = 90;
+const ALTAR_INITIAL_DELAY = 45;
+const ALTAR_RADIUS = 70;
+const ALTAR_CHANNEL_TIME = 4;
+const ALTAR_ACTIVE_TIMEOUT = 20;
+const ALTAR_BLESSING_CHANCE = 0.55;
+const ALTAR_BLESSINGS = ['heal_all', 'shield_all', 'gold_boon', 'xp_boon'];
+const ALTAR_CURSES = ['damage_all', 'spawn_ambush', 'gold_drain'];
+
 const UPGRADES = [
   { id: 'damage', label: '⚔️ เพิ่มดาเมจ', apply: (p) => { p.damage += 4; } },
   { id: 'atkspeed', label: '⚡ โจมตีเร็วขึ้น', apply: (p) => { p.attackCooldownMax = Math.max(150, p.attackCooldownMax - 60); } },
@@ -83,7 +128,7 @@ const MODIFIERS = [
   { id: 'glass_cannon', enemySpeedMult: 1, enemyHpMult: 1, xpMult: 1, dmgMult: 1.25, hpMult: 0.8, eliteChanceMult: 1, regenBonus: 0, goldMult: 1 },
   { id: 'blood_moon', enemySpeedMult: 1, enemyHpMult: 1.15, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1, regenBonus: 0, goldMult: 2 },
   { id: 'fortune', enemySpeedMult: 1, enemyHpMult: 1.2, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1.6, regenBonus: 0, goldMult: 1 },
-  { id: 'blessed_ground', enemySpeedMult: 1, enemyHpMult: 1, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1, regenBonus: 0.5, goldMult: 1 },
+  { id: 'blessed_ground', enemySpeedMult: 1, enemyHpMult: 1.12, xpMult: 1, dmgMult: 1, hpMult: 1, eliteChanceMult: 1, regenBonus: 0.5, goldMult: 1 },
 ];
 
 const MERCHANT_ITEMS = [
@@ -92,6 +137,9 @@ const MERCHANT_ITEMS = [
   { id: 'damage', cost: 30, apply: (p) => { p.damage += 6; } },
   { id: 'speed', cost: 20, apply: (p) => { p.speed += 25; } },
   { id: 'atkspeed', cost: 30, apply: (p) => { p.attackCooldownMax = Math.max(150, p.attackCooldownMax - 50); } },
+  { id: 'regen', cost: 25, apply: (p) => { p.regen += 0.4; } },
+  { id: 'range', cost: 20, apply: (p) => { p.attackRange += 30; } },
+  { id: 'magnet', cost: 15, apply: (p) => { p.pickupRadius += 25; } },
 ];
 
 function randomUpgrades() {
@@ -152,6 +200,9 @@ function makePlayer(id, name) {
     fireAuraLevel: 0,
     frostNovaLevel: 0,
     frostNovaCooldown: 0,
+    frenzyStacks: 0,
+    frenzyDecayAt: 0,
+    hazardSlowUntil: 0,
   };
 }
 
@@ -185,9 +236,14 @@ function createRoom() {
     worldBossAlive: false,
     eventTimer: EVENT_INTERVAL_MIN,
     merchantTimer: MERCHANT_INTERVAL,
+    hazards: [],
+    hazardTimer: NIGHT_HAZARD_INTERVAL,
+    altarActive: null,
+    altarTimer: ALTAR_INITIAL_DELAY,
     nextEnemyId: 1,
     nextProjId: 1,
     nextOrbId: 1,
+    nextHazardId: 1,
   };
   rooms.set(id, room);
   return room;
@@ -263,6 +319,11 @@ function spawnEnemy(room, opts = {}) {
     summonCooldown: NECRO_SUMMON_COOLDOWN,
     slamCooldown: SLAM_COOLDOWN,
     slamTelegraph: null,
+    // signature second attack (world boss only) — offset below full cooldown so it doesn't
+    // always land right on top of the shared slam
+    secondCooldown: SECOND_ATTACK_COOLDOWN * 0.6,
+    lungeTelegraph: null,
+    lungeSpeedBoostUntil: 0,
   };
   room.enemies.push(enemy);
   if (isWorldBoss) room.worldBossAlive = true;
@@ -365,6 +426,42 @@ function triggerWorldEvent(room, alivePlayers) {
   }
 }
 
+// Resolves a completed altar channel into a random room-wide blessing or curse. Effects are
+// one-shot (heal/damage/gold/spawn) rather than timed multipliers, so they're simple, safe,
+// and don't need to be threaded through every damage formula in the game.
+function triggerAltarEffect(room, alivePlayers, ax, ay) {
+  const isBlessing = Math.random() < ALTAR_BLESSING_CHANCE;
+  const pool = isBlessing ? ALTAR_BLESSINGS : ALTAR_CURSES;
+  const kind = pool[Math.floor(Math.random() * pool.length)];
+  switch (kind) {
+    case 'heal_all':
+      for (const p of alivePlayers) p.hp = p.maxHp;
+      break;
+    case 'shield_all':
+      for (const p of alivePlayers) p.invuln = Math.max(p.invuln, 3);
+      break;
+    case 'gold_boon':
+      for (const p of alivePlayers) p.gold += 40;
+      break;
+    case 'xp_boon':
+      for (let i = 0; i < 6; i++) {
+        const a = Math.random() * Math.PI * 2;
+        room.orbs.push({ id: room.nextOrbId++, x: ax + Math.cos(a) * 30, y: ay + Math.sin(a) * 30, value: 20 });
+      }
+      break;
+    case 'damage_all':
+      for (const p of alivePlayers) p.hp = Math.max(1, p.hp - Math.round(p.maxHp * 0.15));
+      break;
+    case 'spawn_ambush':
+      for (let i = 0; i < 6; i++) spawnEnemy(room, { forceType: 'wolf', atPlayer: { x: ax, y: ay } });
+      break;
+    case 'gold_drain':
+      for (const p of alivePlayers) p.gold -= Math.floor(p.gold * 0.5);
+      break;
+  }
+  io.to(room.id).emit('altarEffect', { kind, blessing: isBlessing });
+}
+
 function tickRoom(room) {
   if (!room.started || room.gameOver) return;
   const dt = TICK_MS / 1000;
@@ -447,13 +544,67 @@ function tickRoom(room) {
     if (room.merchant.expires <= 0) room.merchant = null;
   }
 
+  // interactive altar: periodically activates at the world center; players must channel nearby
+  // to trigger a random room-wide blessing or curse (mirrors the treasure-channel pattern)
+  const altarX = WORLD_W / 2, altarY = WORLD_H / 2;
+  if (!room.altarActive) {
+    room.altarTimer -= dt;
+    if (room.altarTimer <= 0) {
+      room.altarTimer = ALTAR_INTERVAL;
+      room.altarActive = { progress: 0, timer: ALTAR_ACTIVE_TIMEOUT };
+    }
+  } else {
+    const a = room.altarActive;
+    a.timer -= dt;
+    const channelers = alivePlayers.filter((p) => distance(p.x, p.y, altarX, altarY) < ALTAR_RADIUS);
+    if (channelers.length > 0) a.progress += dt;
+    if (a.progress >= ALTAR_CHANNEL_TIME) {
+      triggerAltarEffect(room, alivePlayers, altarX, altarY);
+      room.altarActive = null;
+    } else if (a.timer <= 0) {
+      room.altarActive = null;
+    }
+  }
+
+  // night ground hazards: fire/ice patches spawn only during the night phase, punishing
+  // standing still — shares the hazards array/tick with Jörmungandr's poison pool above
+  if (isNight(room)) {
+    room.hazardTimer -= dt;
+    if (room.hazardTimer <= 0) {
+      room.hazardTimer = NIGHT_HAZARD_INTERVAL;
+      const anchor = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 150 + Math.random() * 250;
+      room.hazards.push({
+        id: room.nextHazardId++,
+        x: Math.max(40, Math.min(WORLD_W - 40, anchor.x + Math.cos(angle) * dist)),
+        y: Math.max(40, Math.min(WORLD_H - 40, anchor.y + Math.sin(angle) * dist)),
+        radius: NIGHT_HAZARD_RADIUS,
+        kind: Math.random() < 0.5 ? 'fire' : 'ice',
+        expiresAt: room.elapsed + NIGHT_HAZARD_DURATION,
+      });
+    }
+  }
+  room.hazards = room.hazards.filter((h) => {
+    if (room.elapsed >= h.expiresAt) return false;
+    const dps = h.kind === 'fire' ? NIGHT_HAZARD_FIRE_DPS : h.kind === 'ice' ? NIGHT_HAZARD_ICE_DPS : (h.dps || POISON_POOL_DPS);
+    for (const p of alivePlayers) {
+      if (distance(p.x, p.y, h.x, h.y) < h.radius) {
+        p.hp -= dps * dt;
+        if (p.hp <= 0) { p.hp = 0; p.alive = false; }
+        if (h.kind === 'ice') p.hazardSlowUntil = room.elapsed + 0.3;
+      }
+    }
+    return true;
+  });
+
   // move players
   for (const p of room.players.values()) {
     if (!p.alive) continue;
     const len = Math.hypot(p.dx, p.dy) || 1;
     const nx = p.dx / len;
     const ny = p.dy / len;
-    const speedNow = p.speed * (room.elapsed < p.speedBoostUntil ? 1.4 : 1);
+    const speedNow = p.speed * (room.elapsed < p.speedBoostUntil ? 1.4 : 1) * (room.elapsed < p.hazardSlowUntil ? 0.5 : 1);
     if (p.dx !== 0 || p.dy !== 0) {
       p.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_W - PLAYER_RADIUS, p.x + nx * speedNow * dt));
       p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_H - PLAYER_RADIUS, p.y + ny * speedNow * dt));
@@ -462,6 +613,8 @@ function tickRoom(room) {
     if (p.skillCooldown > 0) p.skillCooldown -= TICK_MS;
     const regen = p.regen + mod.regenBonus;
     if (regen > 0) p.hp = Math.min(p.maxHp, p.hp + regen * dt);
+    // frenzy hard-resets if the player goes too long without a kill — no free stacks from AFK-ing
+    if (p.frenzyStacks > 0 && room.elapsed >= p.frenzyDecayAt) p.frenzyStacks = 0;
   }
 
   // ally synergy: standing near another living ally grants a damage buff to both
@@ -499,8 +652,10 @@ function tickRoom(room) {
           .sort((a, b) => a.d - b.d)
           .slice(0, 1 + p.lightningLevel);
         if (targets.length > 0) {
-          const dmg = Math.round(p.damage * 0.8 * p.lightningLevel);
-          for (const t of targets) t.e.hp -= dmg;
+          // per-bolt damage stays fixed at level up — only target count and cooldown scale with
+          // level — so total output grows linearly, not quadratically, as levels stack
+          const dmg = Math.round(p.damage * 0.5);
+          for (const t of targets) { t.e.hp -= dmg; t.e.lastHitOwnerId = p.id; }
           p.skillDamageDealt += dmg * targets.length;
           io.to(room.id).emit('skillEffect', { type: 'lightning', x: p.x, y: p.y, targets: targets.map((t) => ({ x: t.e.x, y: t.e.y })) });
         }
@@ -508,9 +663,11 @@ function tickRoom(room) {
     }
     if (p.fireAuraLevel > 0) {
       const radius = 70 + p.fireAuraLevel * 15;
-      const dps = 3 + p.fireAuraLevel * 2;
+      // scales with player damage (like lightning/frost) instead of a flat number, so it doesn't
+      // fall behind once damage upgrades/relics/weapon stack up late-game
+      const dps = p.damage * (0.05 + p.fireAuraLevel * 0.03);
       for (const e of room.enemies) {
-        if (distance(p.x, p.y, e.x, e.y) < radius) { e.hp -= dps * dt; p.skillDamageDealt += dps * dt; }
+        if (distance(p.x, p.y, e.x, e.y) < radius) { e.hp -= dps * dt; e.lastHitOwnerId = p.id; p.skillDamageDealt += dps * dt; }
       }
     }
     if (p.frostNovaLevel > 0) {
@@ -524,6 +681,7 @@ function tickRoom(room) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
             e.hp -= dmg;
             e.slowUntil = room.elapsed + 2.5;
+            e.lastHitOwnerId = p.id;
             p.skillDamageDealt += dmg;
             hit = true;
           }
@@ -546,7 +704,8 @@ function tickRoom(room) {
     const dy = nearest.y - e.y;
     const len = Math.hypot(dx, dy) || 1;
     const slowMult = (e.slowUntil && room.elapsed < e.slowUntil) ? 0.4 : 1;
-    const eSpeed = e.speed * slowMult;
+    const lungeBoost = (e.worldBoss && room.elapsed < e.lungeSpeedBoostUntil) ? 1.6 : 1;
+    const eSpeed = e.speed * slowMult * lungeBoost;
 
     if (e.type === 'caster') {
       const preferredRange = 190;
@@ -596,6 +755,14 @@ function tickRoom(room) {
               if (p.hp <= 0) { p.hp = 0; p.alive = false; }
             }
           }
+          // Jörmungandr's slam leaves a lingering poison pool instead of just a one-time hit
+          if (e.name === 'Jörmungandr') {
+            room.hazards.push({
+              id: room.nextHazardId++, x: e.slamTelegraph.x, y: e.slamTelegraph.y,
+              radius: e.slamTelegraph.radius, kind: 'poison', dps: POISON_POOL_DPS,
+              expiresAt: room.elapsed + POISON_POOL_DURATION,
+            });
+          }
           e.slamTelegraph = null;
           e.slamCooldown = SLAM_COOLDOWN;
         }
@@ -603,6 +770,43 @@ function tickRoom(room) {
         e.slamCooldown -= dt;
         if (e.slamCooldown <= 0) {
           e.slamTelegraph = { x: e.x, y: e.y, radius: SLAM_RADIUS, triggerAt: room.elapsed + SLAM_TELEGRAPH_TIME };
+        }
+      }
+
+      // signature second attack — distinct per boss, on its own cooldown separate from the slam
+      if (e.lungeTelegraph) {
+        if (room.elapsed >= e.lungeTelegraph.triggerAt) {
+          e.x = e.lungeTelegraph.x;
+          e.y = e.lungeTelegraph.y;
+          for (const p of alivePlayers) {
+            if (distance(p.x, p.y, e.x, e.y) < LUNGE_RADIUS) {
+              p.hp -= e.damage * 1.4;
+              if (p.hp <= 0) { p.hp = 0; p.alive = false; }
+            }
+          }
+          e.lungeSpeedBoostUntil = room.elapsed + LUNGE_SPEED_BOOST;
+          e.lungeTelegraph = null;
+        }
+      } else {
+        e.secondCooldown -= dt;
+        if (e.secondCooldown <= 0) {
+          e.secondCooldown = SECOND_ATTACK_COOLDOWN;
+          if (e.name === 'Fenrir') {
+            e.lungeTelegraph = { x: nearest.x, y: nearest.y, triggerAt: room.elapsed + LUNGE_TELEGRAPH_TIME };
+          } else if (e.name === 'Surtr') {
+            const baseAngle = Math.atan2(dy, dx);
+            const spread = 0.5;
+            for (let i = 0; i < SURTR_FAN_COUNT; i++) {
+              const a = baseAngle - spread / 2 + (spread * i) / (SURTR_FAN_COUNT - 1);
+              room.enemyProjectiles.push({
+                id: room.nextProjId++, x: e.x, y: e.y,
+                vx: Math.cos(a) * 260, vy: Math.sin(a) * 260,
+                damage: Math.round(e.damage * 0.8), life: 2.2,
+              });
+            }
+          } else if (e.name === 'Hel') {
+            for (let i = 0; i < HEL_SUMMON_COUNT; i++) summonMinion(room, e.x, e.y);
+          }
         }
       }
     }
@@ -647,8 +851,9 @@ function tickRoom(room) {
         .sort((a, b) => a.d - b.d)
         .slice(0, p.projectileCount);
       if (targets.length > 0) {
-        p.attackCooldown = p.attackCooldownMax;
-        const dmg = Math.round(p.damage * (p.synergyActive ? SYNERGY_DAMAGE_MULT : 1) * (room.elapsed < p.damageBoostUntil ? 1.3 : 1));
+        const frenzy = Math.min(FRENZY_MAX_STACKS, p.frenzyStacks || 0);
+        p.attackCooldown = Math.round(p.attackCooldownMax * (1 - Math.min(FRENZY_ATKSPEED_CAP, frenzy * FRENZY_ATKSPEED_PER_STACK)));
+        const dmg = Math.round(p.damage * (p.synergyActive ? SYNERGY_DAMAGE_MULT : 1) * (room.elapsed < p.damageBoostUntil ? 1.3 : 1) * (1 + frenzy * FRENZY_DAMAGE_PER_STACK));
         for (const t of targets) {
           const dx = t.e.x - p.x;
           const dy = t.e.y - p.y;
@@ -677,10 +882,30 @@ function tickRoom(room) {
     for (const e of room.enemies) {
       if (distance(pr.x, pr.y, e.x, e.y) < ENEMY_RADIUS + 6) {
         e.hp -= pr.damage;
+        e.lastHitOwnerId = pr.ownerId;
         const owner = room.players.get(pr.ownerId);
         if (owner) {
           if (pr.isSkill) owner.skillDamageDealt += pr.damage;
           else owner.weaponDamageDealt += pr.damage;
+          // evolved-weapon signature procs — only the main weapon attack triggers these, not skills
+          if (owner.evolved && !pr.isSkill) {
+            if (owner.weapon === 'hammer') {
+              e.slowUntil = room.elapsed + HAMMER_STAGGER_DURATION;
+            } else if (owner.weapon === 'axe') {
+              e.bleedUntil = room.elapsed + AXE_BLEED_DURATION;
+              e.bleedDps = Math.max(e.bleedDps || 0, owner.damage * AXE_BLEED_DMG_FRACTION);
+              e.bleedOwnerId = owner.id;
+            } else if (owner.weapon === 'sword') {
+              const cleaveDmg = Math.round(pr.damage * SWORD_CLEAVE_FRACTION);
+              for (const other of room.enemies) {
+                if (other !== e && distance(e.x, e.y, other.x, other.y) < SWORD_CLEAVE_RADIUS) {
+                  other.hp -= cleaveDmg;
+                  other.lastHitOwnerId = owner.id;
+                  owner.weaponDamageDealt += cleaveDmg;
+                }
+              }
+            }
+          }
         }
         if (pr.pierce > 0) { pr.pierce -= 1; continue; }
         return false;
@@ -689,15 +914,37 @@ function tickRoom(room) {
     return true;
   });
 
+  // axe bleed DoT ticks independently of the hit that applied it
+  for (const e of room.enemies) {
+    if (e.bleedUntil && room.elapsed < e.bleedUntil) {
+      const bleedDmg = (e.bleedDps || 0) * dt;
+      e.hp -= bleedDmg;
+      e.lastHitOwnerId = e.bleedOwnerId;
+      const bleedOwner = room.players.get(e.bleedOwnerId);
+      if (bleedOwner) bleedOwner.weaponDamageDealt += bleedDmg;
+    }
+  }
+
   // remove dead enemies -> spawn xp/gold orbs (+ exploders burst nearby players, world bosses drop a relic)
   const survivors = [];
+  // Regular (non-elite, non-boss) kills get merged into one orb per tick below instead of one
+  // orb each — a swarm event or an AoE spell clearing a dozen enemies in the same tick used to
+  // spawn a dozen separate glowing orbs at once, which is what caused the reported lag spikes.
+  let xpBurstValue = 0, xpBurstX = 0, xpBurstY = 0, xpBurstCount = 0;
   for (const e of room.enemies) {
     if (e.hp <= 0) {
-      room.orbs.push({ id: room.nextOrbId++, x: e.x, y: e.y, value: Math.round((e.worldBoss ? 120 : (e.elite ? 25 : 8)) * mod.xpMult) });
+      const xpValue = Math.round((e.worldBoss ? 120 : (e.elite ? 25 : 8)) * mod.xpMult);
+      if (e.worldBoss || e.elite) {
+        room.orbs.push({ id: room.nextOrbId++, x: e.x, y: e.y, value: xpValue });
+      } else {
+        xpBurstValue += xpValue; xpBurstX += e.x; xpBurstY += e.y; xpBurstCount += 1;
+      }
       if (e.worldBoss) {
         room.orbs.push({ id: room.nextOrbId++, x: e.x + 14, y: e.y + 14, value: 0, relic: true });
       }
-      const goldAmount = e.worldBoss ? 30 : (e.elite ? 10 : (Math.random() < 0.2 * mod.goldMult ? Math.round(3 * mod.goldMult) : 0));
+      // regular-kill drop chance halved from 0.2 — gold was flooding in fast enough that a merchant
+      // visit could afford every offer with no tradeoff, which defeated the point of a shop
+      const goldAmount = e.worldBoss ? 30 : (e.elite ? 10 : (Math.random() < 0.1 * mod.goldMult ? Math.round(3 * mod.goldMult) : 0));
       if (goldAmount > 0) {
         room.orbs.push({ id: room.nextOrbId++, x: e.x - 10, y: e.y + 10, value: 0, gold: goldAmount });
       }
@@ -712,6 +959,13 @@ function tickRoom(room) {
         if (e.elite) owner.eliteKills += 1;
         if (e.worldBoss) owner.worldBossKills += 1;
         owner.killsByType[e.type] = (owner.killsByType[e.type] || 0) + 1;
+      }
+      // frenzy is credited to whoever actually landed the last hit, not just alivePlayers[0]
+      // (used only for kill-count/loot attribution above) — otherwise only one player could ever build stacks
+      const frenzyOwner = room.players.get(e.lastHitOwnerId);
+      if (frenzyOwner && frenzyOwner.alive) {
+        frenzyOwner.frenzyStacks = Math.min(FRENZY_MAX_STACKS, (frenzyOwner.frenzyStacks || 0) + 1);
+        frenzyOwner.frenzyDecayAt = room.elapsed + FRENZY_DECAY_WINDOW;
       }
       if (e.type === 'exploder') {
         const burstDmg = Math.round(15 * (DIFFICULTY[room.difficulty] || DIFFICULTY.normal).damage);
@@ -728,6 +982,9 @@ function tickRoom(room) {
     }
   }
   room.enemies = survivors;
+  if (xpBurstCount > 0) {
+    room.orbs.push({ id: room.nextOrbId++, x: xpBurstX / xpBurstCount, y: xpBurstY / xpBurstCount, value: xpBurstValue });
+  }
 
   // orb magnet pull + pickup
   for (const orb of room.orbs) {
@@ -795,18 +1052,20 @@ function serializeRoom(room) {
       skillCooldown: p.skillCooldown, skillCooldownMax: p.skillCooldownMax,
       evolved: p.evolved, reviveProgress: p.reviveProgress, synergyActive: p.synergyActive,
       speedBoostActive: room.elapsed < p.speedBoostUntil, damageBoostActive: room.elapsed < p.damageBoostUntil,
-      fireAuraLevel: p.fireAuraLevel,
+      fireAuraLevel: p.fireAuraLevel, frenzyStacks: p.frenzyStacks,
       weaponDamageDealt: Math.round(p.weaponDamageDealt), skillDamageDealt: Math.round(p.skillDamageDealt), killsByType: p.killsByType,
     })),
     enemies: room.enemies.map((e) => ({
       id: e.id, x: e.x, y: e.y, hp: e.hp, maxHp: e.maxHp, type: e.type, elite: e.elite, worldBoss: e.worldBoss, name: e.name,
-      slamTelegraph: e.slamTelegraph,
+      slamTelegraph: e.slamTelegraph, lungeTelegraph: e.lungeTelegraph,
     })),
     projectiles: room.projectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y, ownerId: pr.ownerId })),
     enemyProjectiles: room.enemyProjectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
     orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y, relic: o.relic, gold: o.gold, power: o.power })),
+    hazards: room.hazards.map((h) => ({ id: h.id, x: h.x, y: h.y, radius: h.radius, kind: h.kind })),
     treasure: room.treasure ? { x: room.treasure.x, y: room.treasure.y, progress: room.treasure.progress, required: TREASURE_REQUIRED, timer: room.treasure.timer } : null,
     merchant: room.merchant ? { x: room.merchant.x, y: room.merchant.y, expires: room.merchant.expires, offers: room.merchant.offers } : null,
+    altar: room.altarActive ? { x: WORLD_W / 2, y: WORLD_H / 2, progress: room.altarActive.progress, required: ALTAR_CHANNEL_TIME, timer: room.altarActive.timer } : null,
   };
 }
 
@@ -959,6 +1218,7 @@ io.on('connection', (socket) => {
       for (const e of room.enemies) {
         if (distance(p.x, p.y, e.x, e.y) < BASH_RADIUS) {
           e.hp -= bashDmg;
+          e.lastHitOwnerId = p.id;
           p.skillDamageDealt += bashDmg;
         }
       }

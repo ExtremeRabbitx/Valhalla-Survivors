@@ -36,6 +36,11 @@ html, body {
   box-shadow: none;
 }
 #topControls button:hover { border-color: #d4af37; }
+#volumeSlider {
+  width: 70px;
+  accent-color: #d4af37;
+  cursor: pointer;
+}
 
 .difficulty-row {
   display: flex;

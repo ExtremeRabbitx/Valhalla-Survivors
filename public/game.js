@@ -65,6 +65,10 @@ const WORLD_SIZE = 2000; // must match server.js WORLD_W/WORLD_H
 const REVIVE_TIME = 5; // must match server.js REVIVE_TIME
 const POTION_HEAL_CLIENT = 30; // must match server.js POTION_HEAL
 const SLAM_TELEGRAPH_TIME_CLIENT = 1.2; // must match server.js SLAM_TELEGRAPH_TIME
+const LUNGE_TELEGRAPH_TIME_CLIENT = 0.9; // must match server.js LUNGE_TELEGRAPH_TIME
+const LUNGE_RADIUS_CLIENT = 112; // must match server.js LUNGE_RADIUS
+const ALTAR_CHANNEL_TIME_CLIENT = 4; // must match server.js ALTAR_CHANNEL_TIME
+const HAZARD_COLOR = { fire: '#ff8040', ice: '#7ad4f0', poison: '#a060e0' };
 
 const minimapCanvas = document.getElementById('minimap');
 const minimapCtx = minimapCanvas.getContext('2d');
@@ -118,42 +122,57 @@ const SFX = {
   gameover: '/assets/sfx/gameover.ogg',
 };
 let sfxLastPlayed = {};
-let muted = localStorage.getItem('vs_muted') === '1';
+// Master volume (0-1) replaces the old binary mute flag; migrates a previously-saved mute state.
+let masterVolume = localStorage.getItem('vs_volume') !== null
+  ? Math.max(0, Math.min(1, parseFloat(localStorage.getItem('vs_volume'))))
+  : (localStorage.getItem('vs_muted') === '1' ? 0 : 0.5);
 function playSfx(name, { volume = 0.5, throttleMs = 0 } = {}) {
-  if (muted) return;
+  if (masterVolume <= 0) return;
   const now = performance.now();
   if (throttleMs && sfxLastPlayed[name] && now - sfxLastPlayed[name] < throttleMs) return;
   sfxLastPlayed[name] = now;
   const audio = new Audio(SFX[name]);
-  audio.volume = volume;
+  audio.volume = volume * masterVolume;
   audio.play().catch(() => {});
 }
 
 const muteBtn = document.getElementById('muteBtn');
-function updateMuteBtn() { muteBtn.textContent = muted ? '🔇' : '🔊'; }
+const volumeSlider = document.getElementById('volumeSlider');
+volumeSlider.value = Math.round(masterVolume * 100);
+let volumeBeforeMute = masterVolume > 0 ? masterVolume : 0.5;
+function updateMuteBtn() { muteBtn.textContent = masterVolume <= 0 ? '🔇' : masterVolume < 0.5 ? '🔉' : '🔊'; }
 updateMuteBtn();
-muteBtn.addEventListener('click', () => {
-  muted = !muted;
-  localStorage.setItem('vs_muted', muted ? '1' : '0');
+function setVolume(v) {
+  masterVolume = Math.max(0, Math.min(1, v));
+  localStorage.setItem('vs_volume', String(masterVolume));
+  volumeSlider.value = Math.round(masterVolume * 100);
   updateMuteBtn();
-  updateMusicMute();
+  updateMusicVolume();
+}
+muteBtn.addEventListener('click', () => {
+  if (masterVolume > 0) {
+    volumeBeforeMute = masterVolume;
+    setVolume(0);
+  } else {
+    setVolume(volumeBeforeMute);
+  }
 });
+volumeSlider.addEventListener('input', () => setVolume(volumeSlider.value / 100));
 
 // --- Background music (SubspaceAudio, CC0, via OpenGameArt) ---
 const music = {
   gameplay: new Audio('/assets/music/gameplay.ogg'),
   boss: new Audio('/assets/music/boss.ogg'),
 };
+const MUSIC_BASE_VOLUME = { gameplay: 0.22, boss: 0.28 };
 music.gameplay.loop = true;
 music.boss.loop = true;
-music.gameplay.volume = 0.22;
-music.boss.volume = 0.28;
 let currentTrack = null;
-function updateMusicMute() {
-  music.gameplay.muted = muted;
-  music.boss.muted = muted;
+function updateMusicVolume() {
+  music.gameplay.volume = MUSIC_BASE_VOLUME.gameplay * masterVolume;
+  music.boss.volume = MUSIC_BASE_VOLUME.boss * masterVolume;
 }
-updateMusicMute();
+updateMusicVolume();
 function playTrack(name) {
   if (currentTrack === name) return;
   for (const key of Object.keys(music)) {
@@ -239,6 +258,14 @@ const TRANSLATIONS = {
     weaponEvolved: '✨ อาวุธของคุณวิวัฒน์แล้ว! ดาเมจแรงขึ้นและทะลุศัตรูได้',
     relicLabel: (n, pct) => `🏺 เรลิกที่สะสม: ${n} (โบนัสสเตตัส +${pct}% ตอนเริ่มเกม)`,
     treasureLabel: 'ปกป้องสมบัติ!',
+    altarLabel: 'ยืนใกล้แท่นบูชา...',
+    altarEffect_heal_all: '🙏 พรจากแท่นบูชา: ฟื้นเลือดเต็มทุกคน!',
+    altarEffect_shield_all: '🙏 พรจากแท่นบูชา: อมตะชั่วคราวทุกคน!',
+    altarEffect_gold_boon: '🙏 พรจากแท่นบูชา: ได้รับทองเพิ่ม!',
+    altarEffect_xp_boon: '🙏 พรจากแท่นบูชา: ได้รับ XP ก้อนใหญ่!',
+    altarEffect_damage_all: '💀 คำสาปจากแท่นบูชา: ทุกคนเสียเลือด!',
+    altarEffect_spawn_ambush: '💀 คำสาปจากแท่นบูชา: ศัตรูบุกโจมตี!',
+    altarEffect_gold_drain: '💀 คำสาปจากแท่นบูชา: ทองครึ่งหนึ่งหายไป!',
     reviveLabel: 'กำลังปลุก...',
     confirmExit: 'ต้องการออกจากเกมตอนนี้เลยไหม? ความคืบหน้ารอบนี้จะหายไป',
     classLabel: 'อาชีพ:',
@@ -252,6 +279,9 @@ const TRANSLATIONS = {
     merchantItem_damage: (cost) => `⚔️ +6 ดาเมจ (${cost} ทอง)`,
     merchantItem_speed: (cost) => `👟 +25 ความเร็ว (${cost} ทอง)`,
     merchantItem_atkspeed: (cost) => `⚡ โจมตีเร็วขึ้น (${cost} ทอง)`,
+    merchantItem_regen: (cost) => `🌿 ฟื้นฟูเลือด +0.4/วิ (${cost} ทอง)`,
+    merchantItem_range: (cost) => `🏹 ระยะโจมตี +30 (${cost} ทอง)`,
+    merchantItem_magnet: (cost) => `🧲 ระยะดูดพลัง +25 (${cost} ทอง)`,
     purchaseOk: '✅ ซื้อสำเร็จ!',
     nightLabel: '🌙 กลางคืน — ศัตรูแรงขึ้นแต่ดรอปดีขึ้น',
     endlessLabel: '🌌 โหมด Endless — ความยากเพิ่มต่อเนื่องไม่มีสิ้นสุด',
@@ -326,6 +356,14 @@ const TRANSLATIONS = {
     weaponEvolved: '✨ Your weapon has evolved! More damage and it pierces enemies now',
     relicLabel: (n, pct) => `🏺 Relics collected: ${n} (+${pct}% stat bonus at game start)`,
     treasureLabel: 'Defend the treasure!',
+    altarLabel: 'Channel at the altar...',
+    altarEffect_heal_all: '🙏 Altar blessing: everyone fully healed!',
+    altarEffect_shield_all: '🙏 Altar blessing: everyone briefly invulnerable!',
+    altarEffect_gold_boon: '🙏 Altar blessing: bonus gold for everyone!',
+    altarEffect_xp_boon: '🙏 Altar blessing: a burst of XP appeared!',
+    altarEffect_damage_all: '💀 Altar curse: everyone takes damage!',
+    altarEffect_spawn_ambush: '💀 Altar curse: enemies ambush!',
+    altarEffect_gold_drain: '💀 Altar curse: half your gold is gone!',
     reviveLabel: 'Reviving...',
     confirmExit: 'Leave the game now? Your progress this run will be lost.',
     classLabel: 'Class:',
@@ -339,6 +377,9 @@ const TRANSLATIONS = {
     merchantItem_damage: (cost) => `⚔️ +6 damage (${cost} gold)`,
     merchantItem_speed: (cost) => `👟 +25 speed (${cost} gold)`,
     merchantItem_atkspeed: (cost) => `⚡ Faster attack (${cost} gold)`,
+    merchantItem_regen: (cost) => `🌿 +0.4/s regen (${cost} gold)`,
+    merchantItem_range: (cost) => `🏹 +30 attack range (${cost} gold)`,
+    merchantItem_magnet: (cost) => `🧲 +25 pickup radius (${cost} gold)`,
     purchaseOk: '✅ Purchased!',
     nightLabel: '🌙 Night — enemies are stronger but drop more',
     endlessLabel: '🌌 Endless Mode — difficulty keeps climbing forever',
@@ -453,6 +494,12 @@ socket.on('weaponEvolved', () => {
 socket.on('powerupPickup', (kind) => {
   playSfx('pickup', { volume: 0.3 });
   toastQueue.push(t('powerup_' + kind));
+  showNextToast();
+});
+
+socket.on('altarEffect', ({ kind, blessing }) => {
+  playSfx(blessing ? 'levelup' : 'damage', { volume: 0.4 });
+  toastQueue.push(t('altarEffect_' + kind));
   showNextToast();
 });
 
@@ -1143,6 +1190,24 @@ function render() {
   drawAltar(cam, now);
   drawEmbers(dt);
 
+  // ground hazards (fire/ice/poison patches) — drawn as a soft ground layer under everything else
+  for (const h of (latestState.hazards || [])) {
+    const s = worldToScreen(h.x, h.y, cam);
+    const pulse = 1 + 0.08 * Math.sin(now / 220 + h.id);
+    const color = HAZARD_COLOR[h.kind] || HAZARD_COLOR.fire;
+    ctx.save();
+    const grad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, h.radius * pulse);
+    grad.addColorStop(0, color + '55');
+    grad.addColorStop(1, color + '00');
+    ctx.fillStyle = grad;
+    ctx.fillRect(s.x - h.radius, s.y - h.radius, h.radius * 2, h.radius * 2);
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(s.x, s.y, h.radius * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
   // warm light pooling under each living player
   for (const p of latestState.players) {
     if (!p.alive) continue;
@@ -1184,11 +1249,17 @@ function render() {
       ctx.restore();
       continue;
     }
-    ctx.save();
-    ctx.shadowColor = o.relic ? '#f0d060' : '#3aa0d4';
-    ctx.shadowBlur = o.relic ? 18 : 10;
-    drawSprite(SPRITES.gem, s.x, s.y, (o.relic ? 26 : 18) * pulse);
-    ctx.restore();
+    if (o.relic) {
+      // shadowBlur is one of the most expensive canvas ops — only the rare relic pickup gets
+      // the glow now; plain xp gems (which can flood the screen after a burst kill) skip it
+      ctx.save();
+      ctx.shadowColor = '#f0d060';
+      ctx.shadowBlur = 18;
+      drawSprite(SPRITES.gem, s.x, s.y, 26 * pulse);
+      ctx.restore();
+    } else {
+      drawSprite(SPRITES.gem, s.x, s.y, 18 * pulse);
+    }
   }
 
   // traveling merchant NPC
@@ -1234,6 +1305,33 @@ function render() {
     ctx.font = 'bold 13px Georgia';
     ctx.textAlign = 'center';
     ctx.fillText(t('treasureLabel'), s.x, s.y - 44);
+  }
+
+  // interactive altar: active/channeling ring around the world-center landmark
+  if (latestState.altar) {
+    const al = latestState.altar;
+    const s = worldToScreen(al.x, al.y, cam);
+    const pulse = 1 + 0.15 * Math.sin(now / 180);
+    const ringR = 46;
+    ctx.save();
+    ctx.globalAlpha = 0.25 + 0.15 * Math.sin(now / 140);
+    ctx.strokeStyle = '#c090f0';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(s.x, s.y, ringR * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    ctx.strokeStyle = 'rgba(192,144,240,0.3)';
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(s.x, s.y, ringR - 10, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#c090f0';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, ringR - 10, -Math.PI / 2, -Math.PI / 2 + (al.progress / al.required) * Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = '#c090f0';
+    ctx.font = 'bold 13px Georgia';
+    ctx.textAlign = 'center';
+    ctx.fillText(t('altarLabel'), s.x, s.y - 60);
   }
 
   // projectiles: spinning weapon matching each player's chosen loadout
@@ -1301,6 +1399,23 @@ function render() {
       ctx.strokeStyle = '#ff6060';
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(tgs.x, tgs.y, tg.radius, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+
+    if (e.lungeTelegraph) {
+      const lg = e.lungeTelegraph;
+      const lgs = worldToScreen(lg.x, lg.y, cam);
+      const progress = Math.max(0, Math.min(1, 1 - (lg.triggerAt - latestState.elapsed) / LUNGE_TELEGRAPH_TIME_CLIENT));
+      ctx.save();
+      ctx.globalAlpha = 0.15 + progress * 0.4;
+      ctx.fillStyle = '#e0a040';
+      ctx.beginPath(); ctx.arc(lgs.x, lgs.y, LUNGE_RADIUS_CLIENT, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.6 + 0.3 * Math.sin(now / 60);
+      ctx.strokeStyle = '#ffcc60';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.arc(lgs.x, lgs.y, LUNGE_RADIUS_CLIENT, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
       ctx.restore();
     }
 
@@ -1411,6 +1526,17 @@ function render() {
       const icons = (p.speedBoostActive ? '💨' : '') + (p.damageBoostActive ? '🔥' : '');
       ctx.fillText(icons, s.x + 16, s.y - 20);
       ctx.font = '26px serif';
+    }
+
+    if (p.alive && p.frenzyStacks > 0) {
+      ctx.save();
+      ctx.font = 'bold 12px Georgia';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = '#ff6020';
+      ctx.shadowBlur = 6;
+      ctx.fillStyle = '#ffa040';
+      ctx.fillText(`🔥x${p.frenzyStacks}`, s.x, s.y - 34);
+      ctx.restore();
     }
 
     if (!p.alive && p.reviveProgress > 0) {
