@@ -15,6 +15,7 @@ const timerEl = document.getElementById('timer');
 const statsPanel = document.getElementById('statsPanel');
 const upgradeOverlay = document.getElementById('upgradeOverlay');
 const upgradeChoices = document.getElementById('upgradeChoices');
+const specStatus = document.getElementById('specStatus');
 const gameOverOverlay = document.getElementById('gameOverOverlay');
 const gameOverStats = document.getElementById('gameOverStats');
 const leaderboardList = document.getElementById('leaderboardList');
@@ -48,6 +49,7 @@ const SPRITES = {
   class_warrior: loadSprite('/assets/player-warrior.png'),
   class_archer: loadSprite('/assets/player-archer.png'),
   class_mage: loadSprite('/assets/player-mage.png'),
+  class_berserker: loadSprite('/assets/player-berserker.png'),
   wolf: loadSprite('/assets/enemy-wolf.png'),
   skeleton: loadSprite('/assets/enemy-skeleton.png'),
   draugr: loadSprite('/assets/enemy-elite.png'),
@@ -231,6 +233,9 @@ const TRANSLATIONS = {
     diffHard: 'ยาก',
     startGame: 'เริ่มเกม ⚔️',
     chooseUpgrade: 'เลือกพลังใหม่!',
+    specStatus: (area, shooting) => `🌀 สาย Area Lv.${area} | 🎯 สายยิง Lv.${shooting}`,
+    trackTag_area: '🌀 สาย Area',
+    trackTag_shooting: '🎯 สายยิง',
     gameOverTitle: 'เกมจบแล้ว',
     playAgain: 'เล่นอีกครั้ง',
     playerCount: (n) => `ผู้เล่นในห้อง: ${n}`,
@@ -277,6 +282,7 @@ const TRANSLATIONS = {
     classWarrior: '🛡️ นักรบ',
     classArcher: '🏹 นักธนู',
     classMage: '🔮 หมอผี',
+    classBerserker: '🪓 บาร์เซิร์ก',
     enduranceTitle: '🌌 อันดับโหมด Endless (15 นาที+)',
     merchantTitle: '🛒 พ่อค้าเร่',
     merchantItem_heal: (cost) => `💊 ฟื้นเลือดเต็ม (${cost} ทอง)`,
@@ -285,7 +291,7 @@ const TRANSLATIONS = {
     merchantItem_speed: (cost) => `👟 +25 ความเร็ว (${cost} ทอง)`,
     merchantItem_atkspeed: (cost) => `⚡ โจมตีเร็วขึ้น (${cost} ทอง)`,
     merchantItem_regen: (cost) => `🌿 ฟื้นฟูเลือด +0.4/วิ (${cost} ทอง)`,
-    merchantItem_range: (cost) => `🏹 ระยะโจมตี +30 (${cost} ทอง)`,
+    merchantItem_range: (cost) => `🏹 ระยะโจมตี +30 และดาเมจ +2 (${cost} ทอง)`,
     merchantItem_magnet: (cost) => `🧲 ระยะดูดพลัง +25 (${cost} ทอง)`,
     purchaseOk: '✅ ซื้อสำเร็จ!',
     nightLabel: '🌙 กลางคืน — ศัตรูแรงขึ้นแต่ดรอปดีขึ้น',
@@ -306,6 +312,7 @@ const TRANSLATIONS = {
     classDesc_warrior: 'เลือดสูงสุด +25% เดินช้าลง 5% สกิล (Space): ฟันรอบตัวสร้างดาเมจ 2.5 เท่าใส่ศัตรูรอบตัว',
     classDesc_archer: 'เลือดสูงสุด -15% ดาเมจ +5% เดินเร็วขึ้น 10% สกิล (Space): ยิงกระสุน 10 ทิศทางรอบตัวทันที',
     classDesc_mage: 'เลือดสูงสุด -10% ดาเมจ -5% สกิล (Space): ฮีลตัวเองและเพื่อนในระยะใกล้ 30% ของเลือดสูงสุด',
+    classDesc_berserker: 'เลือดสูงสุด +40% ดาเมจ +20% เดินช้าลง 15% โจมตีช้าลง 25% ทุกครั้งที่ตีศัตรูจะกระเด็นถอยหลัง สกิล (Space): กระแทกรอบตัว ดาเมจ 1.5 เท่า พร้อมเหวี่ยงศัตรูกระเด็นไกลกว่าปกติ',
     newRecord: '🏆 สถิติส่วนตัวใหม่!',
     statsBreakdown: (w, s) => `ดาเมจจากอาวุธ: ${w} | ดาเมจจากสกิล: ${s}`,
     enemyName_wolf: '🐺 หมาป่า', enemyName_skeleton: '💀 โครงกระดูก', enemyName_caster: '🔮 นักเวท',
@@ -334,6 +341,9 @@ const TRANSLATIONS = {
     diffHard: 'Hard',
     startGame: 'Start Game ⚔️',
     chooseUpgrade: 'Choose a new power!',
+    specStatus: (area, shooting) => `🌀 Area line Lv.${area} | 🎯 Shooting line Lv.${shooting}`,
+    trackTag_area: '🌀 Area line',
+    trackTag_shooting: '🎯 Shooting line',
     gameOverTitle: 'Game Over',
     playAgain: 'Play Again',
     playerCount: (n) => `Players in room: ${n}`,
@@ -380,6 +390,7 @@ const TRANSLATIONS = {
     classWarrior: '🛡️ Warrior',
     classArcher: '🏹 Archer',
     classMage: '🔮 Mage',
+    classBerserker: '🪓 Berserker',
     enduranceTitle: '🌌 Endless Mode Rankings (15min+)',
     merchantTitle: '🛒 Traveling Merchant',
     merchantItem_heal: (cost) => `💊 Full heal (${cost} gold)`,
@@ -388,7 +399,7 @@ const TRANSLATIONS = {
     merchantItem_speed: (cost) => `👟 +25 speed (${cost} gold)`,
     merchantItem_atkspeed: (cost) => `⚡ Faster attack (${cost} gold)`,
     merchantItem_regen: (cost) => `🌿 +0.4/s regen (${cost} gold)`,
-    merchantItem_range: (cost) => `🏹 +30 attack range (${cost} gold)`,
+    merchantItem_range: (cost) => `🏹 +30 range and +2 damage (${cost} gold)`,
     merchantItem_magnet: (cost) => `🧲 +25 pickup radius (${cost} gold)`,
     purchaseOk: '✅ Purchased!',
     nightLabel: '🌙 Night — enemies are stronger but drop more',
@@ -409,6 +420,7 @@ const TRANSLATIONS = {
     classDesc_warrior: '+25% max HP, 5% slower. Skill (Space): melee smash hits all enemies nearby for 2.5x damage.',
     classDesc_archer: '-15% max HP, +5% damage, 10% faster. Skill (Space): instantly fire 10 shots in all directions.',
     classDesc_mage: '-10% max HP, -5% damage. Skill (Space): heal yourself and nearby allies for 30% of max HP.',
+    classDesc_berserker: '+40% max HP, +20% damage, 15% slower, 25% slower attacks. Every weapon hit knocks the enemy back. Skill (Space): AoE smash for 1.5x damage that knocks enemies back much further.',
     newRecord: '🏆 New personal best!',
     statsBreakdown: (w, s) => `Weapon damage: ${w} | Skill damage: ${s}`,
     enemyName_wolf: '🐺 Wolf', enemyName_skeleton: '💀 Skeleton', enemyName_caster: '🔮 Caster',
@@ -426,19 +438,35 @@ const TRANSLATIONS = {
 const UPGRADE_TEXT = {
   th: {
     damage: '⚔️ เพิ่มดาเมจ', atkspeed: '⚡ โจมตีเร็วขึ้น', speed: '👟 เคลื่อนไหวขึ้น',
-    hp: '❤️ เลือดสูงสุดเพิ่ม', range: '🏹 ระยะโจมไกลขึ้น', multishot: '🌀 ยิงหลายทิศทาง',
+    hp: '❤️ เลือดสูงสุดเพิ่ม', range: '🏹 ระยะโจมไกลขึ้น + ดาเมจ', multishot: '🌀 ยิงหลายทิศทาง',
     regen: '🌿 ฟื้นฟูเลือด', magnet: '🧲 ดูดพลังไกลขึ้น',
     lightning: '⚡ พลังสายฟ้า (ฟาดศัตรูใกล้เคียงเป็นระยะ)',
     fireaura: '🔥 วงแหวนไฟ (เผาศัตรูรอบตัวตลอดเวลา)',
     frostnova: '❄️ คลื่นน้ำแข็ง (ระเบิดน้ำแข็งช้าศัตรูเป็นระยะ)',
+    poison: '☠️ เมฆพิษ (ปล่อยพิษเกาะศัตรูรอบตัวเป็นระยะ ค่อยๆ เสียเลือดต่อเนื่อง)',
+    wind: '🌪️ พายุกรด (ดาเมจ + เหวี่ยงศัตรูรอบตัวกระเด็นออก)',
+    rune: '🔯 วงรูน (ดาเมจศัตรูรอบตัว พร้อมฟื้นเลือดให้ตัวเอง)',
+    meteor: '☄️ อุกกาบาต (คูลดาวน์นาน แต่ดาเมจแรงมาก ตกลงจุดที่ศัตรูรวมตัวหนาแน่นที่สุด)',
+    shockwave: '💥 คลื่นกระแทก (ดาเมจ + ทำให้ศัตรูรอบตัวหยุดนิ่งชั่วคราว)',
+    gravity: '🕳️ หลุมดำ (ดาเมจ + ดูดศัตรูรอบตัวเข้ามารวมกัน)',
+    bramble: '🌵 กับดักหนาม (วางกับดัก ศัตรูเหยียบแล้วระเบิดดาเมจ + หยุดนิ่ง)',
+    bloodnova: '🩸 คลื่นเลือด (เสียเลือดตัวเองเล็กน้อยแลกกับดาเมจรอบตัวมหาศาล)',
   },
   en: {
     damage: '⚔️ Increase Damage', atkspeed: '⚡ Faster Attack', speed: '👟 Move Faster',
-    hp: '❤️ More Max HP', range: '🏹 Longer Range', multishot: '🌀 Multi-shot',
+    hp: '❤️ More Max HP', range: '🏹 Longer Range + Damage', multishot: '🌀 Multi-shot',
     regen: '🌿 HP Regen', magnet: '🧲 Bigger Pickup Range',
     lightning: '⚡ Lightning Power (periodically strikes nearby foes)',
     fireaura: '🔥 Fire Aura (burns enemies around you constantly)',
     frostnova: '❄️ Frost Nova (periodic ice burst that slows enemies)',
+    poison: '☠️ Poison Cloud (periodically afflicts nearby enemies with a lingering DoT)',
+    wind: '🌪️ Wind Gust (damage + knocks nearby enemies away)',
+    rune: '🔯 Rune Circle (damages nearby enemies and heals you)',
+    meteor: '☄️ Meteor Strike (long cooldown, huge damage, lands where enemies are densest)',
+    shockwave: '💥 Shockwave (damage + briefly stuns nearby enemies)',
+    gravity: '🕳️ Gravity Well (damage + pulls nearby enemies together)',
+    bramble: '🌵 Bramble Trap (a placed trap that damages + roots any enemy that steps on it)',
+    bloodnova: '🩸 Blood Nova (costs a bit of your own HP for a huge damage burst)',
   },
 };
 let lang = localStorage.getItem('vs_lang') || 'th';
@@ -684,14 +712,21 @@ let damageFlash = 0;
 
 // --- Class skill effects ---
 let skillEffects = [];
+const SKILL_EFFECT_COLOR = {
+  bash: '#ff8040', warcry: '#c88040', heal: '#7ae08a', lightning: '#f0e060', frostnova: '#a0e0f0',
+  poison: '#a060e0', wind: '#d8e8f0', rune: '#7ae08a', meteor: '#ff6020', shockwave: '#e8e8f0',
+  gravity: '#8060c0', bramble: '#7a9040', bloodnova: '#c02020',
+};
 socket.on('skillEffect', (fx) => {
   skillEffects.push({ ...fx, maxLife: fx.type === 'lightning' ? 0.3 : 0.5, startedAt: performance.now() });
-  const color = fx.type === 'bash' ? '#ff8040' : fx.type === 'heal' ? '#7ae08a' : fx.type === 'lightning' ? '#f0e060' : fx.type === 'frostnova' ? '#a0e0f0' : '#7ad4f0';
-  spawnParticles(fx.x, fx.y, color, 14, 160, 0.4);
+  const color = SKILL_EFFECT_COLOR[fx.type] || '#7ad4f0';
+  const big = fx.type === 'warcry' || fx.type === 'meteor' || fx.type === 'bloodnova';
+  spawnParticles(fx.x, fx.y, color, big ? 22 : 14, big ? 220 : 160, 0.4);
   if (fx.type === 'lightning') {
     for (const target of (fx.targets || [])) spawnParticles(target.x, target.y, '#f0e060', 8, 140, 0.3);
   }
-  if (fx.type === 'bash' || fx.type === 'frostnova') triggerShake(6, 0.15);
+  if (fx.type === 'bash' || fx.type === 'frostnova' || fx.type === 'shockwave' || fx.type === 'bramble') triggerShake(6, 0.15);
+  if (fx.type === 'warcry' || fx.type === 'meteor' || fx.type === 'bloodnova') triggerShake(10, 0.2);
 });
 function renderSkillEffects(cam, now) {
   skillEffects = skillEffects.filter((fx) => {
@@ -705,6 +740,17 @@ function renderSkillEffects(cam, now) {
       ctx.strokeStyle = '#ff8040';
       ctx.lineWidth = 4;
       ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 100) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'warcry') {
+      // a thicker double ring shockwave, reads heavier than the warrior's bash
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#c88040';
+      ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 130) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = '#ffb060';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 130) * progress * 0.7, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
     } else if (fx.type === 'volley') {
       ctx.save();
@@ -742,6 +788,69 @@ function renderSkillEffects(cam, now) {
       ctx.strokeStyle = '#a0e0f0';
       ctx.lineWidth = 4;
       ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 120) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'poison') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#a060e0';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 70) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'wind') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#d8e8f0';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([6, 8]);
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 90) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    } else if (fx.type === 'rune') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#7ae08a';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 80) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'meteor') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#ff6020';
+      ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 100) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = `rgba(255,140,60,${(1 - progress) * 0.25})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 100) * progress, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    } else if (fx.type === 'shockwave') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#e8e8f0';
+      ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 85) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'gravity') {
+      // rings shrinking inward instead of expanding outward, reading as a pull rather than a push
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#8060c0';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 180) * (1 - progress), 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'bramble') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#7a9040';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 50) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (fx.type === 'bloodnova') {
+      ctx.save();
+      ctx.globalAlpha = 1 - progress;
+      ctx.strokeStyle = '#c02020';
+      ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 90) * progress, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = `rgba(180,20,20,${(1 - progress) * 0.2})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, (fx.radius || 90) * progress, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
     return true;
@@ -1246,6 +1355,24 @@ function render() {
     ctx.restore();
   }
 
+  // bramble traps — a small marker plus a faint radius ring, unlike hazards these are a
+  // one-shot reactive trigger rather than a lingering damage zone
+  for (const tr of (latestState.traps || [])) {
+    const s = worldToScreen(tr.x, tr.y, cam);
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.1 * Math.sin(now / 200 + tr.id);
+    ctx.strokeStyle = '#7a9040';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 5]);
+    ctx.beginPath(); ctx.arc(s.x, s.y, tr.radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    ctx.font = '16px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🌵', s.x, s.y);
+  }
+
   // warm light pooling under each living player
   for (const p of latestState.players) {
     if (!p.alive) continue;
@@ -1719,11 +1846,20 @@ function updateHud(state) {
     if (upgradeChoices.dataset.signature !== signature) {
       upgradeChoices.dataset.signature = signature;
       upgradeOverlay.classList.remove('hidden');
+      specStatus.textContent = t('specStatus', me.areaSpecPicks || 0, me.shootingSpecPicks || 0);
       upgradeChoices.innerHTML = '';
       for (const u of me.pendingLevelUp) {
         const card = document.createElement('div');
         card.className = 'upgrade-card';
-        card.textContent = UPGRADE_TEXT[lang][u.id] || u.label;
+        const label = document.createElement('div');
+        label.textContent = UPGRADE_TEXT[lang][u.id] || u.label;
+        card.appendChild(label);
+        if (u.track) {
+          const tag = document.createElement('div');
+          tag.className = 'upgrade-track-tag';
+          tag.textContent = t('trackTag_' + u.track);
+          card.appendChild(tag);
+        }
         card.addEventListener('click', () => {
           playSfx('click', { volume: 0.4 });
           socket.emit('chooseUpgrade', u.id);

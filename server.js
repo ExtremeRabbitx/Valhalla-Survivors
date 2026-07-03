@@ -64,6 +64,32 @@ const NIGHT_HAZARD_ICE_DPS = 3;
 const POISON_POOL_DURATION = 6;
 const POISON_POOL_DPS = 10;
 
+// 5 additional area (AoE) skill upgrades, alongside lightning/fireaura/frostnova. Poison reuses
+// the shared hazard-zone system; wind/shockwave reuse the knockback/stun override in the enemy
+// movement loop; meteor reuses the same "instant pulse + skillEffect emit" shape as lightning.
+const POISON_CLOUD_DURATION_BASE = 3;
+const WIND_KNOCKBACK_SPEED = 300;
+const STUN_DURATION_BASE = 0.8;
+
+const UPGRADE_TRACKS = {
+  damage: 'shooting', atkspeed: 'shooting', multishot: 'shooting', range: 'shooting',
+  lightning: 'area', fireaura: 'area', frostnova: 'area',
+  poison: 'area', wind: 'area', rune: 'area', meteor: 'area', shockwave: 'area',
+  gravity: 'area', bramble: 'area', bloodnova: 'area',
+};
+
+// 3 more area skills. Gravity pulls enemies in (the opposite of knockback) using the same
+// top-of-loop movement-override slot; bramble is a placed, reactive trap instead of a pulse
+// (needs its own room.traps array); blood nova costs the caster HP instead of just a cooldown.
+const GRAVITY_PULL_DURATION = 1.2;
+const GRAVITY_PULL_SPEED = 220;
+const BRAMBLE_DURATION = 10; // seconds an unsprung trap lasts before it fades
+const BLOOD_NOVA_HP_COST_FRACTION = 0.08;
+// Passive bonus scaling with how many picks a player has invested in each track — 'shooting'
+// boosts the player's own weapon damage, 'area' boosts all elemental/AoE skill radius+damage.
+const SHOOTING_SPEC_BONUS_PER_PICK = 0.05;
+const AREA_SPEC_BONUS_PER_PICK = 0.06;
+
 // Evolved-weapon signature procs — on top of the shared evolve bonus (+40% dmg, pierce+2)
 const AXE_BLEED_DURATION = 2;
 const AXE_BLEED_DMG_FRACTION = 0.25; // bleed dps = weapon damage * this
@@ -90,18 +116,34 @@ const ALTAR_BLESSING_CHANCE = 0.55;
 const ALTAR_BLESSINGS = ['heal_all', 'shield_all', 'gold_boon', 'xp_boon'];
 const ALTAR_CURSES = ['damage_all', 'spawn_ambush', 'gold_drain'];
 
+// Generic knockback — any enemy can be shoved back by a hit; while active it overrides normal
+// movement/attack entirely instead of chasing the player, so it doubles as free crowd control.
+const KNOCKBACK_DURATION = 0.35; // seconds a weapon-hit knockback lasts
+const KNOCKBACK_SPEED = 240;
+const WARCRY_RADIUS = 130;
+const WARCRY_KNOCKBACK_SPEED = 380;
+const WARCRY_KNOCKBACK_DURATION = KNOCKBACK_DURATION * 1.6;
+
 const UPGRADES = [
   { id: 'damage', label: '⚔️ เพิ่มดาเมจ', apply: (p) => { p.damage += 4; } },
   { id: 'atkspeed', label: '⚡ โจมตีเร็วขึ้น', apply: (p) => { p.attackCooldownMax = Math.max(150, p.attackCooldownMax - 60); } },
   { id: 'speed', label: '👟 เคลื่อนไหวขึ้น', apply: (p) => { p.speed += 30; } },
   { id: 'hp', label: '❤️ เลือดสูงสุดเพิ่ม', apply: (p) => { p.maxHp += 25; p.hp += 25; } },
-  { id: 'range', label: '🏹 ระยะโจมไกลขึ้น', apply: (p) => { p.attackRange += 40; } },
+  { id: 'range', label: '🏹 ระยะโจมไกลขึ้น + ดาเมจ', apply: (p) => { p.attackRange += 40; p.damage += 2; } },
   { id: 'multishot', label: '🌀 ยิงหลายทิศทาง', apply: (p) => { p.projectileCount += 1; } },
   { id: 'regen', label: '🌿 ฟื้นฟูเลือด', apply: (p) => { p.regen += 0.5; } },
   { id: 'magnet', label: '🧲 ดูดพลังไกลขึ้น', apply: (p) => { p.pickupRadius += 35; } },
   { id: 'lightning', label: '⚡ พลังสายฟ้า', apply: (p) => { p.lightningLevel = (p.lightningLevel || 0) + 1; } },
   { id: 'fireaura', label: '🔥 วงแหวนไฟ', apply: (p) => { p.fireAuraLevel = (p.fireAuraLevel || 0) + 1; } },
   { id: 'frostnova', label: '❄️ คลื่นน้ำแข็ง', apply: (p) => { p.frostNovaLevel = (p.frostNovaLevel || 0) + 1; } },
+  { id: 'poison', label: '☠️ เมฆพิษ', apply: (p) => { p.poisonLevel = (p.poisonLevel || 0) + 1; } },
+  { id: 'wind', label: '🌪️ พายุกรด', apply: (p) => { p.windLevel = (p.windLevel || 0) + 1; } },
+  { id: 'rune', label: '🔯 วงรูน', apply: (p) => { p.runeLevel = (p.runeLevel || 0) + 1; } },
+  { id: 'meteor', label: '☄️ อุกกาบาต', apply: (p) => { p.meteorLevel = (p.meteorLevel || 0) + 1; } },
+  { id: 'shockwave', label: '💥 คลื่นกระแทก', apply: (p) => { p.shockwaveLevel = (p.shockwaveLevel || 0) + 1; } },
+  { id: 'gravity', label: '🕳️ หลุมดำ', apply: (p) => { p.gravityLevel = (p.gravityLevel || 0) + 1; } },
+  { id: 'bramble', label: '🌵 กับดักหนาม', apply: (p) => { p.brambleLevel = (p.brambleLevel || 0) + 1; } },
+  { id: 'bloodnova', label: '🩸 คลื่นเลือด', apply: (p) => { p.bloodNovaLevel = (p.bloodNovaLevel || 0) + 1; } },
 ];
 
 const DIFFICULTY = {
@@ -120,6 +162,8 @@ const CLASSES = {
   warrior: { hpMult: 1.25, dmgMult: 1, speedMult: 0.95, skill: 'bash', skillCooldownMax: 7000 },
   archer: { hpMult: 0.85, dmgMult: 1.05, speedMult: 1.1, skill: 'volley', skillCooldownMax: 6000 },
   mage: { hpMult: 0.9, dmgMult: 0.95, speedMult: 1, skill: 'heal', skillCooldownMax: 10000 },
+  // tanky, slow-but-hard-hitting brute — every weapon hit shoves the target back
+  berserker: { hpMult: 1.4, dmgMult: 1.2, speedMult: 0.85, atkSpeedMult: 0.75, skill: 'warcry', skillCooldownMax: 8000, knockback: true },
 };
 
 const MODIFIERS = [
@@ -138,13 +182,28 @@ const MERCHANT_ITEMS = [
   { id: 'speed', cost: 20, apply: (p) => { p.speed += 25; } },
   { id: 'atkspeed', cost: 30, apply: (p) => { p.attackCooldownMax = Math.max(150, p.attackCooldownMax - 50); } },
   { id: 'regen', cost: 25, apply: (p) => { p.regen += 0.4; } },
-  { id: 'range', cost: 20, apply: (p) => { p.attackRange += 30; } },
+  { id: 'range', cost: 20, apply: (p) => { p.attackRange += 30; p.damage += 2; } },
   { id: 'magnet', cost: 15, apply: (p) => { p.pickupRadius += 25; } },
 ];
 
 function randomUpgrades() {
   const shuffled = [...UPGRADES].sort(() => Math.random() - 0.5);
-  return shuffled.slice(0, 3).map((u) => ({ id: u.id, label: u.label }));
+  return shuffled.slice(0, 3).map((u) => ({ id: u.id, label: u.label, track: UPGRADE_TRACKS[u.id] || null }));
+}
+
+// Recomputes a player's line-specialization bonus from their full upgrade-pick history —
+// called once whenever an upgrade is chosen, rather than every tick, since upgradeCounts only
+// changes on pick.
+function updateSpecMults(p) {
+  let areaPicks = 0, shootingPicks = 0;
+  for (const [id, count] of Object.entries(p.upgradeCounts)) {
+    if (UPGRADE_TRACKS[id] === 'area') areaPicks += count;
+    else if (UPGRADE_TRACKS[id] === 'shooting') shootingPicks += count;
+  }
+  p.areaSpecPicks = areaPicks;
+  p.shootingSpecPicks = shootingPicks;
+  p.areaSpecMult = 1 + areaPicks * AREA_SPEC_BONUS_PER_PICK;
+  p.shootingSpecMult = 1 + shootingPicks * SHOOTING_SPEC_BONUS_PER_PICK;
 }
 
 function xpForLevel(level) {
@@ -203,6 +262,26 @@ function makePlayer(id, name) {
     frenzyStacks: 0,
     frenzyDecayAt: 0,
     hazardSlowUntil: 0,
+    poisonLevel: 0,
+    poisonCooldown: 0,
+    windLevel: 0,
+    windCooldown: 0,
+    runeLevel: 0,
+    runeCooldown: 0,
+    meteorLevel: 0,
+    meteorCooldown: 0,
+    shockwaveLevel: 0,
+    shockwaveCooldown: 0,
+    gravityLevel: 0,
+    gravityCooldown: 0,
+    brambleLevel: 0,
+    brambleCooldown: 0,
+    bloodNovaLevel: 0,
+    bloodNovaCooldown: 0,
+    areaSpecMult: 1,
+    shootingSpecMult: 1,
+    areaSpecPicks: 0,
+    shootingSpecPicks: 0,
   };
 }
 
@@ -238,12 +317,14 @@ function createRoom() {
     merchantTimer: MERCHANT_INTERVAL,
     hazards: [],
     hazardTimer: NIGHT_HAZARD_INTERVAL,
+    traps: [],
     altarActive: null,
     altarTimer: ALTAR_INITIAL_DELAY,
     nextEnemyId: 1,
     nextProjId: 1,
     nextOrbId: 1,
     nextHazardId: 1,
+    nextTrapId: 1,
   };
   rooms.set(id, room);
   return room;
@@ -602,6 +683,25 @@ function tickRoom(room) {
     return true;
   });
 
+  // bramble traps: reactive (triggers when an enemy walks over it) rather than a pulse, and
+  // consumed on trigger — reuses stunUntil for the "root" so an already-proven CC path is reused
+  // instead of inventing a near-identical field
+  room.traps = room.traps.filter((tr) => {
+    if (room.elapsed >= tr.expiresAt) return false;
+    for (const e of room.enemies) {
+      if (distance(e.x, e.y, tr.x, tr.y) < tr.radius) {
+        e.hp -= tr.dmg;
+        e.lastHitOwnerId = tr.ownerId;
+        e.stunUntil = room.elapsed + tr.rootDuration;
+        const trapOwner = room.players.get(tr.ownerId);
+        if (trapOwner) trapOwner.skillDamageDealt += tr.dmg;
+        io.to(room.id).emit('skillEffect', { type: 'bramble', x: tr.x, y: tr.y, radius: tr.radius });
+        return false;
+      }
+    }
+    return true;
+  });
+
   // move players
   for (const p of room.players.values()) {
     if (!p.alive) continue;
@@ -643,22 +743,24 @@ function tickRoom(room) {
     }
   }
 
-  // elemental powers: passive AoE abilities picked up as level-up upgrades, separate from
-  // the player's main weapon attack (lightning bolts, a burning aura, a slowing frost pulse)
+  // elemental/area powers: passive AoE abilities picked up as level-up upgrades, separate from
+  // the player's main weapon attack. Radius and damage all scale with p.areaSpecMult — the more
+  // "area" upgrades a player has picked overall, the stronger every one of these gets.
   for (const p of alivePlayers) {
+    const am = p.areaSpecMult || 1;
     if (p.lightningLevel > 0) {
       p.lightningCooldown -= TICK_MS;
       if (p.lightningCooldown <= 0) {
         p.lightningCooldown = Math.max(800, 2600 - p.lightningLevel * 200);
         const targets = room.enemies
           .map((e) => ({ e, d: distance(p.x, p.y, e.x, e.y) }))
-          .filter((t) => t.d < 320)
+          .filter((t) => t.d < 320 * am)
           .sort((a, b) => a.d - b.d)
           .slice(0, 1 + p.lightningLevel);
         if (targets.length > 0) {
           // per-bolt damage stays fixed at level up — only target count and cooldown scale with
           // level — so total output grows linearly, not quadratically, as levels stack
-          const dmg = Math.round(p.damage * 0.5);
+          const dmg = Math.round(p.damage * 0.5 * am);
           for (const t of targets) { t.e.hp -= dmg; t.e.lastHitOwnerId = p.id; }
           p.skillDamageDealt += dmg * targets.length;
           io.to(room.id).emit('skillEffect', { type: 'lightning', x: p.x, y: p.y, targets: targets.map((t) => ({ x: t.e.x, y: t.e.y })) });
@@ -666,12 +768,12 @@ function tickRoom(room) {
       }
     }
     if (p.fireAuraLevel > 0) {
-      const radius = 70 + p.fireAuraLevel * 15;
+      const radius = (70 + p.fireAuraLevel * 15) * am;
       // a flat baseline (so it's actually noticeable at low starting damage, ~10) plus a
       // damage-scaling term (so it doesn't fall behind once damage upgrades/relics/weapon stack
       // up late-game) — a damage-only version of this tried earlier came out to ~0.8 dps at
       // level 1 with base damage 10, which read as "does nothing" in real play
-      const dps = (2 + p.fireAuraLevel * 1.5) + p.damage * (0.03 + p.fireAuraLevel * 0.02);
+      const dps = ((2 + p.fireAuraLevel * 1.5) + p.damage * (0.03 + p.fireAuraLevel * 0.02)) * am;
       for (const e of room.enemies) {
         if (distance(p.x, p.y, e.x, e.y) < radius) { e.hp -= dps * dt; e.lastHitOwnerId = p.id; p.skillDamageDealt += dps * dt; }
       }
@@ -680,8 +782,8 @@ function tickRoom(room) {
       p.frostNovaCooldown -= TICK_MS;
       if (p.frostNovaCooldown <= 0) {
         p.frostNovaCooldown = Math.max(2000, 4500 - p.frostNovaLevel * 300);
-        const radius = 120 + p.frostNovaLevel * 20;
-        const dmg = Math.round(p.damage * 0.6 * p.frostNovaLevel);
+        const radius = (120 + p.frostNovaLevel * 20) * am;
+        const dmg = Math.round(p.damage * 0.6 * p.frostNovaLevel * am);
         let hit = false;
         for (const e of room.enemies) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
@@ -695,10 +797,202 @@ function tickRoom(room) {
         if (hit) io.to(room.id).emit('skillEffect', { type: 'frostnova', x: p.x, y: p.y, radius });
       }
     }
+    if (p.poisonLevel > 0) {
+      p.poisonCooldown -= TICK_MS;
+      if (p.poisonCooldown <= 0) {
+        p.poisonCooldown = Math.max(2500, 5000 - p.poisonLevel * 400);
+        const radius = (60 + p.poisonLevel * 12) * am;
+        const poisonDps = ((1.5 + p.poisonLevel * 1) + p.damage * (0.02 + p.poisonLevel * 0.015)) * am;
+        const poisonDuration = POISON_CLOUD_DURATION_BASE + p.poisonLevel * 0.5;
+        let hit = false;
+        // afflicts a lingering DoT on every enemy caught in the pulse (like axe bleed) rather
+        // than a spatial hazard zone, since room.hazards is for damaging *players*, not enemies
+        for (const e of room.enemies) {
+          if (distance(p.x, p.y, e.x, e.y) < radius) {
+            e.poisonUntil = room.elapsed + poisonDuration;
+            e.poisonDps = Math.max(e.poisonDps || 0, poisonDps);
+            e.poisonOwnerId = p.id;
+            hit = true;
+          }
+        }
+        if (hit) io.to(room.id).emit('skillEffect', { type: 'poison', x: p.x, y: p.y, radius });
+      }
+    }
+    if (p.windLevel > 0) {
+      p.windCooldown -= TICK_MS;
+      if (p.windCooldown <= 0) {
+        p.windCooldown = Math.max(3000, 6000 - p.windLevel * 500);
+        const radius = (90 + p.windLevel * 15) * am;
+        const dmg = Math.round(p.damage * (0.4 + p.windLevel * 0.15) * am);
+        let hit = false;
+        for (const e of room.enemies) {
+          if (distance(p.x, p.y, e.x, e.y) < radius) {
+            e.hp -= dmg;
+            e.lastHitOwnerId = p.id;
+            p.skillDamageDealt += dmg;
+            const kdx = e.x - p.x, kdy = e.y - p.y;
+            const klen = Math.hypot(kdx, kdy) || 1;
+            e.knockbackVX = (kdx / klen) * WIND_KNOCKBACK_SPEED;
+            e.knockbackVY = (kdy / klen) * WIND_KNOCKBACK_SPEED;
+            e.knockbackUntil = room.elapsed + KNOCKBACK_DURATION;
+            e.knockbackTotalDuration = KNOCKBACK_DURATION;
+            hit = true;
+          }
+        }
+        if (hit) io.to(room.id).emit('skillEffect', { type: 'wind', x: p.x, y: p.y, radius });
+      }
+    }
+    if (p.runeLevel > 0) {
+      p.runeCooldown -= TICK_MS;
+      if (p.runeCooldown <= 0) {
+        p.runeCooldown = Math.max(3500, 7000 - p.runeLevel * 600);
+        const radius = (80 + p.runeLevel * 12) * am;
+        const dmg = Math.round(p.damage * (0.5 + p.runeLevel * 0.2) * am);
+        let hit = false;
+        for (const e of room.enemies) {
+          if (distance(p.x, p.y, e.x, e.y) < radius) {
+            e.hp -= dmg;
+            e.lastHitOwnerId = p.id;
+            p.skillDamageDealt += dmg;
+            hit = true;
+          }
+        }
+        if (hit) {
+          p.hp = Math.min(p.maxHp, p.hp + Math.round(p.maxHp * (0.02 + p.runeLevel * 0.01)));
+          io.to(room.id).emit('skillEffect', { type: 'rune', x: p.x, y: p.y, radius });
+        }
+      }
+    }
+    if (p.meteorLevel > 0) {
+      p.meteorCooldown -= TICK_MS;
+      if (p.meteorCooldown <= 0) {
+        p.meteorCooldown = Math.max(8000, 16000 - p.meteorLevel * 1500);
+        // strikes wherever enemies are densest within scan range, not just under the player —
+        // a long-cooldown, high-impact nuke rather than another self-centered pulse
+        const scanRange = 500;
+        const nearby = room.enemies.filter((e) => distance(p.x, p.y, e.x, e.y) < scanRange);
+        if (nearby.length > 0) {
+          const radius = (100 + p.meteorLevel * 15) * am;
+          let best = nearby[0], bestCount = -1;
+          for (const candidate of nearby) {
+            const count = nearby.filter((e) => distance(candidate.x, candidate.y, e.x, e.y) < radius).length;
+            if (count > bestCount) { bestCount = count; best = candidate; }
+          }
+          const dmg = Math.round(p.damage * (2 + p.meteorLevel * 0.8) * am);
+          for (const e of room.enemies) {
+            if (distance(best.x, best.y, e.x, e.y) < radius) {
+              e.hp -= dmg;
+              e.lastHitOwnerId = p.id;
+              p.skillDamageDealt += dmg;
+            }
+          }
+          io.to(room.id).emit('skillEffect', { type: 'meteor', x: best.x, y: best.y, radius });
+        }
+      }
+    }
+    if (p.shockwaveLevel > 0) {
+      p.shockwaveCooldown -= TICK_MS;
+      if (p.shockwaveCooldown <= 0) {
+        p.shockwaveCooldown = Math.max(4000, 8000 - p.shockwaveLevel * 700);
+        const radius = (85 + p.shockwaveLevel * 12) * am;
+        const dmg = Math.round(p.damage * (0.35 + p.shockwaveLevel * 0.12) * am);
+        const stunDuration = STUN_DURATION_BASE + p.shockwaveLevel * 0.15;
+        let hit = false;
+        for (const e of room.enemies) {
+          if (distance(p.x, p.y, e.x, e.y) < radius) {
+            e.hp -= dmg;
+            e.lastHitOwnerId = p.id;
+            e.stunUntil = room.elapsed + stunDuration;
+            p.skillDamageDealt += dmg;
+            hit = true;
+          }
+        }
+        if (hit) io.to(room.id).emit('skillEffect', { type: 'shockwave', x: p.x, y: p.y, radius });
+      }
+    }
+    if (p.gravityLevel > 0) {
+      p.gravityCooldown -= TICK_MS;
+      if (p.gravityCooldown <= 0) {
+        p.gravityCooldown = Math.max(6000, 11000 - p.gravityLevel * 900);
+        const radius = (180 + p.gravityLevel * 20) * am;
+        const dmg = Math.round(p.damage * (1 + p.gravityLevel * 0.4) * am);
+        let hit = false;
+        for (const e of room.enemies) {
+          if (distance(p.x, p.y, e.x, e.y) < radius) {
+            e.hp -= dmg;
+            e.lastHitOwnerId = p.id;
+            p.skillDamageDealt += dmg;
+            // pulls the enemy toward where the player was standing at cast time — the opposite
+            // of knockback, and useful for bunching enemies up for other AoE skills
+            e.pullTargetX = p.x;
+            e.pullTargetY = p.y;
+            e.pullUntil = room.elapsed + GRAVITY_PULL_DURATION;
+            hit = true;
+          }
+        }
+        if (hit) io.to(room.id).emit('skillEffect', { type: 'gravity', x: p.x, y: p.y, radius });
+      }
+    }
+    if (p.brambleLevel > 0) {
+      p.brambleCooldown -= TICK_MS;
+      if (p.brambleCooldown <= 0) {
+        p.brambleCooldown = Math.max(5000, 9000 - p.brambleLevel * 700);
+        room.traps.push({
+          id: room.nextTrapId++, x: p.x, y: p.y,
+          radius: (50 + p.brambleLevel * 8) * am,
+          dmg: Math.round(p.damage * (1.2 + p.brambleLevel * 0.3) * am),
+          rootDuration: 1 + p.brambleLevel * 0.2,
+          ownerId: p.id, expiresAt: room.elapsed + BRAMBLE_DURATION,
+        });
+      }
+    }
+    if (p.bloodNovaLevel > 0) {
+      p.bloodNovaCooldown -= TICK_MS;
+      if (p.bloodNovaCooldown <= 0 && p.hp > 1) {
+        p.bloodNovaCooldown = Math.max(7000, 12000 - p.bloodNovaLevel * 900);
+        p.hp = Math.max(1, p.hp - Math.round(p.maxHp * BLOOD_NOVA_HP_COST_FRACTION));
+        const radius = (90 + p.bloodNovaLevel * 15) * am;
+        const dmg = Math.round(p.damage * (1.8 + p.bloodNovaLevel * 0.6) * am);
+        let hit = false;
+        for (const e of room.enemies) {
+          if (distance(p.x, p.y, e.x, e.y) < radius) {
+            e.hp -= dmg;
+            e.lastHitOwnerId = p.id;
+            p.skillDamageDealt += dmg;
+            hit = true;
+          }
+        }
+        if (hit) io.to(room.id).emit('skillEffect', { type: 'bloodnova', x: p.x, y: p.y, radius });
+      }
+    }
   }
 
   // move enemies toward nearest player (casters keep their distance and shoot instead of meleeing)
   for (const e of room.enemies) {
+    // knockback overrides all normal movement/attack behavior while active — the enemy is
+    // physically flying backward, not choosing to chase or shoot, and the push decays to 0
+    // by the time it expires so it doesn't feel like a sudden stop
+    if (e.knockbackUntil && room.elapsed < e.knockbackUntil) {
+      const remaining = e.knockbackUntil - room.elapsed;
+      const total = e.knockbackTotalDuration || KNOCKBACK_DURATION;
+      const frac = Math.max(0, Math.min(1, remaining / total));
+      e.x = Math.max(20, Math.min(WORLD_W - 20, e.x + (e.knockbackVX || 0) * frac * dt));
+      e.y = Math.max(20, Math.min(WORLD_H - 20, e.y + (e.knockbackVY || 0) * frac * dt));
+      continue;
+    }
+    // stunned enemies are fully frozen — no movement, no attack — distinct from a slow, which
+    // just reduces speed
+    if (e.stunUntil && room.elapsed < e.stunUntil) continue;
+    // gravity well: pulled toward the point the player was standing at cast time, the mirror
+    // image of knockback (moves toward a fixed point instead of away, no decay needed since it
+    // just cuts off when the duration ends)
+    if (e.pullUntil && room.elapsed < e.pullUntil) {
+      const pdx = e.pullTargetX - e.x, pdy = e.pullTargetY - e.y;
+      const plen = Math.hypot(pdx, pdy) || 1;
+      e.x = Math.max(20, Math.min(WORLD_W - 20, e.x + (pdx / plen) * GRAVITY_PULL_SPEED * dt));
+      e.y = Math.max(20, Math.min(WORLD_H - 20, e.y + (pdy / plen) * GRAVITY_PULL_SPEED * dt));
+      continue;
+    }
     let nearest = null;
     let best = Infinity;
     for (const p of alivePlayers) {
@@ -859,7 +1153,7 @@ function tickRoom(room) {
       if (targets.length > 0) {
         const frenzy = Math.min(FRENZY_MAX_STACKS, p.frenzyStacks || 0);
         p.attackCooldown = Math.round(p.attackCooldownMax * (1 - Math.min(FRENZY_ATKSPEED_CAP, frenzy * FRENZY_ATKSPEED_PER_STACK)));
-        const dmg = Math.round(p.damage * (p.synergyActive ? SYNERGY_DAMAGE_MULT : 1) * (room.elapsed < p.damageBoostUntil ? 1.3 : 1) * (1 + frenzy * FRENZY_DAMAGE_PER_STACK));
+        const dmg = Math.round(p.damage * (p.shootingSpecMult || 1) * (p.synergyActive ? SYNERGY_DAMAGE_MULT : 1) * (room.elapsed < p.damageBoostUntil ? 1.3 : 1) * (1 + frenzy * FRENZY_DAMAGE_PER_STACK));
         for (const t of targets) {
           const dx = t.e.x - p.x;
           const dy = t.e.y - p.y;
@@ -912,6 +1206,15 @@ function tickRoom(room) {
               }
             }
           }
+          // berserker: every weapon hit shoves the target away from the attacker
+          if (!pr.isSkill && (CLASSES[owner.playerClass] || {}).knockback) {
+            const kdx = e.x - owner.x, kdy = e.y - owner.y;
+            const klen = Math.hypot(kdx, kdy) || 1;
+            e.knockbackVX = (kdx / klen) * KNOCKBACK_SPEED;
+            e.knockbackVY = (kdy / klen) * KNOCKBACK_SPEED;
+            e.knockbackUntil = room.elapsed + KNOCKBACK_DURATION;
+            e.knockbackTotalDuration = KNOCKBACK_DURATION;
+          }
         }
         if (pr.pierce > 0) { pr.pierce -= 1; continue; }
         return false;
@@ -920,7 +1223,7 @@ function tickRoom(room) {
     return true;
   });
 
-  // axe bleed DoT ticks independently of the hit that applied it
+  // axe bleed / poison cloud DoTs tick independently of the hit that applied them
   for (const e of room.enemies) {
     if (e.bleedUntil && room.elapsed < e.bleedUntil) {
       const bleedDmg = (e.bleedDps || 0) * dt;
@@ -928,6 +1231,13 @@ function tickRoom(room) {
       e.lastHitOwnerId = e.bleedOwnerId;
       const bleedOwner = room.players.get(e.bleedOwnerId);
       if (bleedOwner) bleedOwner.weaponDamageDealt += bleedDmg;
+    }
+    if (e.poisonUntil && room.elapsed < e.poisonUntil) {
+      const poisonDmg = (e.poisonDps || 0) * dt;
+      e.hp -= poisonDmg;
+      e.lastHitOwnerId = e.poisonOwnerId;
+      const poisonOwner = room.players.get(e.poisonOwnerId);
+      if (poisonOwner) poisonOwner.skillDamageDealt += poisonDmg;
     }
   }
 
@@ -1062,6 +1372,7 @@ function serializeRoom(room) {
       damageBoostRemaining: Math.max(0, Math.round((p.damageBoostUntil - room.elapsed) * 10) / 10),
       shieldRemaining: Math.round(Math.max(0, p.invuln) * 10) / 10,
       fireAuraLevel: p.fireAuraLevel, frenzyStacks: p.frenzyStacks,
+      areaSpecPicks: p.areaSpecPicks, shootingSpecPicks: p.shootingSpecPicks,
       weaponDamageDealt: Math.round(p.weaponDamageDealt), skillDamageDealt: Math.round(p.skillDamageDealt), killsByType: p.killsByType,
     })),
     enemies: room.enemies.map((e) => ({
@@ -1072,6 +1383,7 @@ function serializeRoom(room) {
     enemyProjectiles: room.enemyProjectiles.map((pr) => ({ id: pr.id, x: pr.x, y: pr.y })),
     orbs: room.orbs.map((o) => ({ id: o.id, x: o.x, y: o.y, relic: o.relic, gold: o.gold, power: o.power })),
     hazards: room.hazards.map((h) => ({ id: h.id, x: h.x, y: h.y, radius: h.radius, kind: h.kind })),
+    traps: room.traps.map((tr) => ({ id: tr.id, x: tr.x, y: tr.y, radius: tr.radius })),
     treasure: room.treasure ? { x: room.treasure.x, y: room.treasure.y, progress: room.treasure.progress, required: TREASURE_REQUIRED, timer: room.treasure.timer } : null,
     merchant: room.merchant ? { x: room.merchant.x, y: room.merchant.y, expires: room.merchant.expires, offers: room.merchant.offers } : null,
     altar: room.altarActive ? { x: WORLD_W / 2, y: WORLD_H / 2, progress: room.altarActive.progress, required: ALTAR_CHANNEL_TIME, timer: room.altarActive.timer } : null,
@@ -1168,6 +1480,7 @@ io.on('connection', (socket) => {
         p.maxHp = Math.round(p.maxHp * c.hpMult);
         p.hp = p.maxHp;
         p.speed = Math.round(p.speed * c.speedMult);
+        p.attackCooldownMax = Math.round(p.attackCooldownMax / (c.atkSpeedMult || 1));
         p.skillCooldownMax = c.skillCooldownMax;
         p.skillCooldown = 0;
 
@@ -1204,6 +1517,7 @@ io.on('connection', (socket) => {
     if (choice) {
       choice.apply(p);
       p.upgradeCounts[upgradeId] = (p.upgradeCounts[upgradeId] || 0) + 1;
+      updateSpecMults(p);
       if (!p.evolved && upgradeId === 'damage' && p.upgradeCounts.damage >= EVOLVE_DAMAGE_UPGRADES) {
         p.evolved = true;
         p.damage = Math.round(p.damage * 1.4);
@@ -1251,6 +1565,22 @@ io.on('connection', (socket) => {
         }
       }
       io.to(room.id).emit('skillEffect', { type: 'heal', x: p.x, y: p.y, radius: HEAL_RADIUS });
+    } else if (c.skill === 'warcry') {
+      const dmg = p.damage * 1.5;
+      for (const e of room.enemies) {
+        if (distance(p.x, p.y, e.x, e.y) < WARCRY_RADIUS) {
+          e.hp -= dmg;
+          e.lastHitOwnerId = p.id;
+          p.skillDamageDealt += dmg;
+          const kdx = e.x - p.x, kdy = e.y - p.y;
+          const klen = Math.hypot(kdx, kdy) || 1;
+          e.knockbackVX = (kdx / klen) * WARCRY_KNOCKBACK_SPEED;
+          e.knockbackVY = (kdy / klen) * WARCRY_KNOCKBACK_SPEED;
+          e.knockbackUntil = room.elapsed + WARCRY_KNOCKBACK_DURATION;
+          e.knockbackTotalDuration = WARCRY_KNOCKBACK_DURATION;
+        }
+      }
+      io.to(room.id).emit('skillEffect', { type: 'warcry', x: p.x, y: p.y, radius: WARCRY_RADIUS });
     }
   });
 

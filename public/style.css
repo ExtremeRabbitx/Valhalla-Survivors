@@ -214,6 +214,13 @@ button:hover { filter: brightness(1.1); }
   border-color: #f0d060;
   box-shadow: 0 8px 24px rgba(0,0,0,0.6), 0 0 20px rgba(240,208,96,0.35);
 }
+.upgrade-track-tag {
+  margin-top: 8px;
+  font-size: 0.75em;
+  color: #a8b8d8;
+  opacity: 0.8;
+}
+#specStatus { font-size: 0.85em; color: #b8b4a8; }
 
 #statsPanel { box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
 #timer { box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
