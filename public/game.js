@@ -817,6 +817,13 @@ socket.on('state', (state) => {
   if (state.gameOver) { showGameOver(state); stopMusic(); }
 });
 
+// Continuous damage sources (fire aura, bleed, ground hazards) apply a tiny fraction of a
+// point per 50ms tick — displaying each tick's raw delta rounds down to "0" every single time
+// even though real damage is accumulating fine server-side. Accumulate here and only pop a
+// number once it reaches a whole point, so the popup is accurate instead of misleadingly "0".
+const enemyDamageAccum = new Map(); // enemyId -> undisplayed fractional damage
+const playerDamageAccum = new Map(); // playerId -> undisplayed fractional damage
+
 function diffEffects(oldState, newState) {
   const oldEnemies = new Map(oldState.enemies.map((e) => [e.id, e]));
   const newIds = new Set(newState.enemies.map((e) => e.id));
@@ -825,6 +832,7 @@ function diffEffects(oldState, newState) {
       // enemy died
       spawnParticles(e.x, e.y, ENEMY_PARTICLE_COLOR[e.type] || '#c0392b', e.elite ? 22 : 10, e.elite ? 220 : 140, 0.5);
       hitFlashes.delete(id);
+      enemyDamageAccum.delete(id);
       playSfx('kill', { volume: e.elite ? 0.6 : 0.35, throttleMs: 40 });
     }
   }
@@ -833,7 +841,14 @@ function diffEffects(oldState, newState) {
     if (old && e.hp < old.hp) {
       hitFlashes.set(e.id, performance.now());
       spawnParticles(e.x, e.y, '#ffe08a', 3, 80, 0.25);
-      spawnDamageNumber(e.x, e.y, old.hp - e.hp, '#f0d060', e.elite);
+      const accum = (enemyDamageAccum.get(e.id) || 0) + (old.hp - e.hp);
+      const shown = Math.floor(accum);
+      if (shown > 0) {
+        spawnDamageNumber(e.x, e.y, shown, '#f0d060', e.elite);
+        enemyDamageAccum.set(e.id, accum - shown);
+      } else {
+        enemyDamageAccum.set(e.id, accum);
+      }
       playSfx('hit', { volume: 0.2, throttleMs: 60 });
     }
   }
@@ -842,7 +857,14 @@ function diffEffects(oldState, newState) {
     const old = oldPlayers.get(p.id);
     if (old && p.hp < old.hp) {
       spawnParticles(p.x, p.y, '#e06060', 6, 100, 0.3);
-      spawnDamageNumber(p.x, p.y, old.hp - p.hp, '#e06060', false);
+      const pAccum = (playerDamageAccum.get(p.id) || 0) + (old.hp - p.hp);
+      const pShown = Math.floor(pAccum);
+      if (pShown > 0) {
+        spawnDamageNumber(p.x, p.y, pShown, '#e06060', false);
+        playerDamageAccum.set(p.id, pAccum - pShown);
+      } else {
+        playerDamageAccum.set(p.id, pAccum);
+      }
       if (p.id === myId) {
         triggerShake(8, 0.25);
         damageFlash = reduceMotion ? 0.15 : 0.35;
