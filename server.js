@@ -552,6 +552,10 @@ function tickRoom(room) {
     if (room.altarTimer <= 0) {
       room.altarTimer = ALTAR_INTERVAL;
       room.altarActive = { progress: 0, timer: ALTAR_ACTIVE_TIMEOUT };
+      // announce activation room-wide — the altar is only visible if you're already looking at
+      // it, and it's live for a small fraction of the run, so without this players can easily
+      // never notice it triggered at all
+      io.to(room.id).emit('altarActivated');
     }
   } else {
     const a = room.altarActive;
@@ -663,9 +667,11 @@ function tickRoom(room) {
     }
     if (p.fireAuraLevel > 0) {
       const radius = 70 + p.fireAuraLevel * 15;
-      // scales with player damage (like lightning/frost) instead of a flat number, so it doesn't
-      // fall behind once damage upgrades/relics/weapon stack up late-game
-      const dps = p.damage * (0.05 + p.fireAuraLevel * 0.03);
+      // a flat baseline (so it's actually noticeable at low starting damage, ~10) plus a
+      // damage-scaling term (so it doesn't fall behind once damage upgrades/relics/weapon stack
+      // up late-game) — a damage-only version of this tried earlier came out to ~0.8 dps at
+      // level 1 with base damage 10, which read as "does nothing" in real play
+      const dps = (2 + p.fireAuraLevel * 1.5) + p.damage * (0.03 + p.fireAuraLevel * 0.02);
       for (const e of room.enemies) {
         if (distance(p.x, p.y, e.x, e.y) < radius) { e.hp -= dps * dt; e.lastHitOwnerId = p.id; p.skillDamageDealt += dps * dt; }
       }
@@ -1052,6 +1058,9 @@ function serializeRoom(room) {
       skillCooldown: p.skillCooldown, skillCooldownMax: p.skillCooldownMax,
       evolved: p.evolved, reviveProgress: p.reviveProgress, synergyActive: p.synergyActive,
       speedBoostActive: room.elapsed < p.speedBoostUntil, damageBoostActive: room.elapsed < p.damageBoostUntil,
+      speedBoostRemaining: Math.max(0, Math.round((p.speedBoostUntil - room.elapsed) * 10) / 10),
+      damageBoostRemaining: Math.max(0, Math.round((p.damageBoostUntil - room.elapsed) * 10) / 10),
+      shieldRemaining: Math.round(Math.max(0, p.invuln) * 10) / 10,
       fireAuraLevel: p.fireAuraLevel, frenzyStacks: p.frenzyStacks,
       weaponDamageDealt: Math.round(p.weaponDamageDealt), skillDamageDealt: Math.round(p.skillDamageDealt), killsByType: p.killsByType,
     })),
@@ -1253,11 +1262,15 @@ io.on('connection', (socket) => {
     if (distance(p.x, p.y, room.merchant.x, room.merchant.y) > MERCHANT_RADIUS) return;
     const offer = room.merchant.offers[offerIndex];
     if (!offer || p.gold < offer.cost) return;
+    // each offer is buyable once per player, not once per room — it used to null out the whole
+    // room's offer slot on purchase, so only the first player in a co-op group could ever buy anything
+    if (offer.boughtBy && offer.boughtBy.includes(p.id)) return;
     const item = MERCHANT_ITEMS.find((it) => it.id === offer.id);
     if (!item) return;
     p.gold -= offer.cost;
     item.apply(p);
-    room.merchant.offers[offerIndex] = null;
+    if (!offer.boughtBy) offer.boughtBy = [];
+    offer.boughtBy.push(p.id);
     io.to(p.id).emit('purchaseOk', offer.id);
   });
 

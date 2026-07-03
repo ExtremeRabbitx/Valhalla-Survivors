@@ -260,7 +260,12 @@ const TRANSLATIONS = {
     treasureLabel: 'ปกป้องสมบัติ!',
     altarLabel: 'ยืนใกล้แท่นบูชา...',
     altarEffect_heal_all: '🙏 พรจากแท่นบูชา: ฟื้นเลือดเต็มทุกคน!',
-    altarEffect_shield_all: '🙏 พรจากแท่นบูชา: อมตะชั่วคราวทุกคน!',
+    altarEffect_shield_all: '🙏 พรจากแท่นบูชา: อมตะทุกคน 3 วินาที!',
+    altarActivated: '🔮 แท่นบูชาตื่นขึ้นแล้ว! ไปยืนใกล้ๆ เพื่อรับพร (หรือคำสาป)!',
+    statusSpeed: 'ความเร็ว+',
+    statusDamage: 'ดาเมจ+',
+    statusShield: 'อมตะ',
+    statusFrenzy: 'คลั่ง',
     altarEffect_gold_boon: '🙏 พรจากแท่นบูชา: ได้รับทองเพิ่ม!',
     altarEffect_xp_boon: '🙏 พรจากแท่นบูชา: ได้รับ XP ก้อนใหญ่!',
     altarEffect_damage_all: '💀 คำสาปจากแท่นบูชา: ทุกคนเสียเลือด!',
@@ -358,7 +363,12 @@ const TRANSLATIONS = {
     treasureLabel: 'Defend the treasure!',
     altarLabel: 'Channel at the altar...',
     altarEffect_heal_all: '🙏 Altar blessing: everyone fully healed!',
-    altarEffect_shield_all: '🙏 Altar blessing: everyone briefly invulnerable!',
+    altarEffect_shield_all: '🙏 Altar blessing: everyone invulnerable for 3s!',
+    altarActivated: '🔮 The altar has awakened! Go stand near it for a blessing (or a curse)!',
+    statusSpeed: 'Speed+',
+    statusDamage: 'Damage+',
+    statusShield: 'Invuln',
+    statusFrenzy: 'Frenzy',
     altarEffect_gold_boon: '🙏 Altar blessing: bonus gold for everyone!',
     altarEffect_xp_boon: '🙏 Altar blessing: a burst of XP appeared!',
     altarEffect_damage_all: '💀 Altar curse: everyone takes damage!',
@@ -494,6 +504,12 @@ socket.on('weaponEvolved', () => {
 socket.on('powerupPickup', (kind) => {
   playSfx('pickup', { volume: 0.3 });
   toastQueue.push(t('powerup_' + kind));
+  showNextToast();
+});
+
+socket.on('altarActivated', () => {
+  playSfx('levelup', { volume: 0.35 });
+  toastQueue.push(t('altarActivated'));
   showNextToast();
 });
 
@@ -1604,14 +1620,29 @@ function formatTime(t) {
   return `${m}:${s}`;
 }
 
+// Active buff/debuff chips for a player — shown for everyone (self + teammates) so co-op
+// partners can see each other's status at a glance, not just a toast that flashes and vanishes.
+function statusEffectsHtml(p) {
+  const chips = [];
+  if (p.alive && p.speedBoostRemaining > 0) chips.push(`💨 ${t('statusSpeed')} ${p.speedBoostRemaining}s`);
+  if (p.alive && p.damageBoostRemaining > 0) chips.push(`🔥 ${t('statusDamage')} ${p.damageBoostRemaining}s`);
+  if (p.alive && p.shieldRemaining > 0.5) chips.push(`🛡️ ${t('statusShield')} ${p.shieldRemaining}s`);
+  if (p.alive && p.frenzyStacks > 0) chips.push(`⚔️ ${t('statusFrenzy')} x${p.frenzyStacks}`);
+  if (chips.length === 0) return '';
+  return `<div class="status-chips">${chips.join(' ')}</div>`;
+}
+
 function updateHud(state) {
   timerEl.textContent = formatTime(state.elapsed) + (state.night ? ' 🌙' : '') + (state.endless ? ' 🌌' : '');
   timerEl.title = state.endless ? t('endlessLabel') : (state.night ? t('nightLabel') : '');
   statsPanel.innerHTML = state.players.map((p) => `
-    <div class="pstat">
+    <div class="pstat${p.id === myId ? ' pstat-self' : ''}">
       <strong>${p.name}${p.id === myId ? t('you') : ''}</strong> — Lv.${p.level} ${p.alive ? '' : '💀'}
       <div class="bar"><div class="bar-fill" style="width:${Math.max(0, (p.hp / p.maxHp) * 100)}%"></div></div>
+      <div class="bar-label">❤️ ${Math.max(0, Math.round(p.hp))}/${p.maxHp}</div>
       <div class="bar"><div class="bar-fill xp-fill" style="width:${(p.xp / p.xpNeeded) * 100}%"></div></div>
+      <div class="bar-label">⭐ ${Math.round(p.xp)}/${p.xpNeeded}</div>
+      ${statusEffectsHtml(p)}
     </div>
   `).join('');
 
@@ -1639,14 +1670,15 @@ function updateHud(state) {
     // or affordability flips) — rebuilding every tick would destroy the button under the
     // cursor 20x/sec and make it nearly impossible to click, like the old upgrade-card bug.
     const signature = state.merchant.offers
-      .map((offer) => (offer ? `${offer.id}:${offer.cost}:${me.gold >= offer.cost}` : 'none'))
+      .map((offer) => (offer ? `${offer.id}:${offer.cost}:${me.gold >= offer.cost}:${(offer.boughtBy || []).includes(myId)}` : 'none'))
       .join(',');
     if (merchantOffers.dataset.signature !== signature) {
       merchantOffers.dataset.signature = signature;
       merchantOffers.innerHTML = state.merchant.offers.map((offer, i) => {
         if (!offer) return '';
-        const affordable = me.gold >= offer.cost;
-        return `<button class="merchant-offer" data-i="${i}" ${affordable ? '' : 'disabled'}>${t('merchantItem_' + offer.id, offer.cost)}</button>`;
+        const alreadyBought = (offer.boughtBy || []).includes(myId);
+        const affordable = me.gold >= offer.cost && !alreadyBought;
+        return `<button class="merchant-offer" data-i="${i}" ${affordable ? '' : 'disabled'}>${t('merchantItem_' + offer.id, offer.cost)}${alreadyBought ? ' ✅' : ''}</button>`;
       }).join('');
       merchantOffers.querySelectorAll('.merchant-offer').forEach((btn) => {
         btn.addEventListener('click', () => {

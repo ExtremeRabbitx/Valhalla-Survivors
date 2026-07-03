@@ -175,10 +175,13 @@ button:hover { filter: brightness(1.1); }
   font-size: 0.85em;
   max-width: 260px;
 }
-#statsPanel .pstat { margin-bottom: 4px; }
+#statsPanel .pstat { margin-bottom: 4px; padding: 3px 4px; border-radius: 4px; }
+#statsPanel .pstat-self { background: rgba(212,175,55,0.12); border: 1px solid rgba(212,175,55,0.35); }
 #statsPanel .bar { background: #2a2f3f; border-radius: 4px; height: 8px; overflow: hidden; margin-top: 2px; }
 #statsPanel .bar-fill { height: 100%; background: #c0392b; }
 #statsPanel .xp-fill { height: 100%; background: #3aa0d4; }
+#statsPanel .bar-label { font-size: 0.82em; color: #b8b4a8; text-align: right; }
+#statsPanel .status-chips { font-size: 0.78em; color: #f0d060; margin-top: 2px; text-align: right; }
 
 #upgradeOverlay, #gameOverOverlay, #onboardingOverlay {
   position: fixed; inset: 0;
