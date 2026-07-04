@@ -440,7 +440,7 @@ const UPGRADE_TEXT = {
     damage: '⚔️ เพิ่มดาเมจ', atkspeed: '⚡ โจมตีเร็วขึ้น', speed: '👟 เคลื่อนไหวขึ้น',
     hp: '❤️ เลือดสูงสุดเพิ่ม', range: '🏹 ระยะโจมไกลขึ้น + ดาเมจ', multishot: '🌀 ยิงหลายทิศทาง',
     regen: '🌿 ฟื้นฟูเลือด', magnet: '🧲 ดูดพลังไกลขึ้น',
-    lightning: '⚡ พลังสายฟ้า (ฟาดศัตรูใกล้เคียงเป็นระยะ)',
+    lightning: '⚡ พลังสายฟ้า (ฟาดศัตรูแล้วชิ่งต่อไปตัวถัดไป ยิ่งเลเวลสูงยิ่งชิ่งได้หลายตัว)',
     fireaura: '🔥 วงแหวนไฟ (เผาศัตรูรอบตัวตลอดเวลา)',
     frostnova: '❄️ คลื่นน้ำแข็ง (ระเบิดน้ำแข็งช้าศัตรูเป็นระยะ)',
     poison: '☠️ เมฆพิษ (ปล่อยพิษเกาะศัตรูรอบตัวเป็นระยะ ค่อยๆ เสียเลือดต่อเนื่อง)',
@@ -456,7 +456,7 @@ const UPGRADE_TEXT = {
     damage: '⚔️ Increase Damage', atkspeed: '⚡ Faster Attack', speed: '👟 Move Faster',
     hp: '❤️ More Max HP', range: '🏹 Longer Range + Damage', multishot: '🌀 Multi-shot',
     regen: '🌿 HP Regen', magnet: '🧲 Bigger Pickup Range',
-    lightning: '⚡ Lightning Power (periodically strikes nearby foes)',
+    lightning: '⚡ Lightning Power (bounces from enemy to enemy — higher level bounces more)',
     fireaura: '🔥 Fire Aura (burns enemies around you constantly)',
     frostnova: '❄️ Frost Nova (periodic ice burst that slows enemies)',
     poison: '☠️ Poison Cloud (periodically afflicts nearby enemies with a lingering DoT)',
@@ -727,6 +727,10 @@ socket.on('skillEffect', (fx) => {
   }
   if (fx.type === 'bash' || fx.type === 'frostnova' || fx.type === 'shockwave' || fx.type === 'bramble') triggerShake(6, 0.15);
   if (fx.type === 'warcry' || fx.type === 'meteor' || fx.type === 'bloodnova') triggerShake(10, 0.2);
+  // a quiet "cast" cue for every skill activation, since most of these now fire their visual
+  // even when nothing was in range to hit — without a sound too, an off-screen cast during a
+  // busy fight can still slip by unnoticed
+  playSfx('click', { volume: big ? 0.35 : 0.2, throttleMs: 80 });
 });
 function renderSkillEffects(cam, now) {
   skillEffects = skillEffects.filter((fx) => {
@@ -772,14 +776,18 @@ function renderSkillEffects(cam, now) {
       ctx.lineWidth = 2;
       ctx.shadowColor = '#f0e060';
       ctx.shadowBlur = 10;
+      // draws a real chain: player -> first target -> second target -> ... instead of a fan
+      // of separate bolts all starting at the player, matching the bounce mechanic server-side
+      let prev = s;
       for (const target of (fx.targets || [])) {
         const ts = worldToScreen(target.x, target.y, cam);
         ctx.beginPath();
-        ctx.moveTo(s.x, s.y);
+        ctx.moveTo(prev.x, prev.y);
         // a jagged mid-point makes the bolt read as lightning instead of a straight laser
-        ctx.lineTo((s.x + ts.x) / 2 + (Math.random() - 0.5) * 20, (s.y + ts.y) / 2 + (Math.random() - 0.5) * 20);
+        ctx.lineTo((prev.x + ts.x) / 2 + (Math.random() - 0.5) * 20, (prev.y + ts.y) / 2 + (Math.random() - 0.5) * 20);
         ctx.lineTo(ts.x, ts.y);
         ctx.stroke();
+        prev = ts;
       }
       ctx.restore();
     } else if (fx.type === 'frostnova') {
@@ -1781,6 +1789,24 @@ function statusEffectsHtml(p) {
   return `<div class="status-chips">${chips.join(' ')}</div>`;
 }
 
+// Icons match the emoji already used for each upgrade's label/card, so this reads consistently
+// with the level-up screen.
+const SKILL_ICON = {
+  lightning: '⚡', fireaura: '🔥', frostnova: '❄️', poison: '☠️', wind: '🌪️', rune: '🔯',
+  meteor: '☄️', shockwave: '💥', gravity: '🕳️', bramble: '🌵', bloodnova: '🩸',
+};
+
+// Shows which area/elemental skills a player has picked and their current level — a persistent
+// readout, since the only place this info showed before was the upgrade-choice screen itself.
+function skillLevelsHtml(p) {
+  const levels = p.skillLevels || {};
+  const parts = Object.keys(SKILL_ICON)
+    .filter((id) => levels[id] > 0)
+    .map((id) => `${SKILL_ICON[id]}${levels[id]}`);
+  if (parts.length === 0) return '';
+  return `<div class="skill-levels">${parts.join(' ')}</div>`;
+}
+
 function updateHud(state) {
   timerEl.textContent = formatTime(state.elapsed) + (state.night ? ' 🌙' : '') + (state.endless ? ' 🌌' : '');
   timerEl.title = state.endless ? t('endlessLabel') : (state.night ? t('nightLabel') : '');
@@ -1792,6 +1818,7 @@ function updateHud(state) {
       <div class="bar"><div class="bar-fill xp-fill" style="width:${(p.xp / p.xpNeeded) * 100}%"></div></div>
       <div class="bar-label">⭐ ${Math.round(p.xp)}/${p.xpNeeded}</div>
       ${statusEffectsHtml(p)}
+      ${skillLevelsHtml(p)}
     </div>
   `).join('');
 

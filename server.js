@@ -241,6 +241,7 @@ function makePlayer(id, name) {
     alive: true,
     invuln: 0,
     pendingLevelUp: null,
+    levelUpQueue: [],
     kills: 0,
     eliteKills: 0,
     worldBossKills: 0,
@@ -383,7 +384,9 @@ function spawnEnemy(room, opts = {}) {
   const isElite = !forceWorldBoss && !forceType && Math.random() < Math.min(0.15, minute * 0.03) * mod.eliteChanceMult;
   const isWorldBoss = !!forceWorldBoss;
   const type = isWorldBoss ? 'worldboss' : (forceType || (isElite ? 'draugr' : pickEnemyType()));
-  const eliteMult = isWorldBoss ? 16 : (isElite ? 4 : 1);
+  // world boss HP raised from 16x to 26x so the fight takes real sustained effort instead of
+  // being over quickly once a group's DPS ramps up
+  const eliteMult = isWorldBoss ? 26 : (isElite ? 4 : 1);
   const night = isNight(room);
   const hp = Math.round((15 + minute * 8) * coopScale * diff.hp * mod.enemyHpMult * eliteMult * (night ? 1.15 : 1));
   const speed = (60 + Math.random() * 20 + minute * 2) * (isElite || isWorldBoss ? 0.75 : 1) * mod.enemySpeedMult * (ENEMY_SPEED_MULT[type] || 1);
@@ -391,7 +394,7 @@ function spawnEnemy(room, opts = {}) {
     id: room.nextEnemyId++,
     x, y, hp, maxHp: hp,
     speed,
-    damage: Math.round((4 + minute * 1.5) * diff.damage * (isWorldBoss ? 3 : (isElite ? 2 : 1)) * (night ? 1.1 : 1) * (ENEMY_DAMAGE_MULT[type] || 1)),
+    damage: Math.round((4 + minute * 1.5) * diff.damage * (isWorldBoss ? 3.5 : (isElite ? 2 : 1)) * (night ? 1.1 : 1) * (ENEMY_DAMAGE_MULT[type] || 1)),
     elite: isElite || isWorldBoss,
     worldBoss: isWorldBoss,
     name: (isElite || isWorldBoss) ? nextBossName(isWorldBoss) : null,
@@ -752,19 +755,34 @@ function tickRoom(room) {
       p.lightningCooldown -= TICK_MS;
       if (p.lightningCooldown <= 0) {
         p.lightningCooldown = Math.max(800, 2600 - p.lightningLevel * 200);
-        const targets = room.enemies
-          .map((e) => ({ e, d: distance(p.x, p.y, e.x, e.y) }))
-          .filter((t) => t.d < 320 * am)
-          .sort((a, b) => a.d - b.d)
-          .slice(0, 1 + p.lightningLevel);
-        if (targets.length > 0) {
-          // per-bolt damage stays fixed at level up — only target count and cooldown scale with
+        // a real chain: the first jump goes out from the player, every jump after that searches
+        // from wherever the bolt just landed — so it bounces through a cluster of enemies
+        // rather than just multi-hitting whichever targets happen to be nearest the player
+        const chainRange = 320 * am;
+        const maxBounces = 1 + p.lightningLevel;
+        const chain = [];
+        let fromX = p.x, fromY = p.y;
+        for (let i = 0; i < maxBounces; i++) {
+          let best = null, bestD = Infinity;
+          for (const e of room.enemies) {
+            if (chain.includes(e)) continue;
+            const d = distance(fromX, fromY, e.x, e.y);
+            if (d < chainRange && d < bestD) { bestD = d; best = e; }
+          }
+          if (!best) break;
+          chain.push(best);
+          fromX = best.x; fromY = best.y;
+        }
+        if (chain.length > 0) {
+          // per-bolt damage stays fixed at level up — only bounce count and cooldown scale with
           // level — so total output grows linearly, not quadratically, as levels stack
           const dmg = Math.round(p.damage * 0.5 * am);
-          for (const t of targets) { t.e.hp -= dmg; t.e.lastHitOwnerId = p.id; }
-          p.skillDamageDealt += dmg * targets.length;
-          io.to(room.id).emit('skillEffect', { type: 'lightning', x: p.x, y: p.y, targets: targets.map((t) => ({ x: t.e.x, y: t.e.y })) });
+          for (const e of chain) { e.hp -= dmg; e.lastHitOwnerId = p.id; }
+          p.skillDamageDealt += dmg * chain.length;
         }
+        // always shows a cast effect on cooldown, even with no targets in range — otherwise a
+        // skill that's on cooldown but finds nothing to hit looks indistinguishable from broken
+        io.to(room.id).emit('skillEffect', { type: 'lightning', x: p.x, y: p.y, targets: chain.map((e) => ({ x: e.x, y: e.y })) });
       }
     }
     if (p.fireAuraLevel > 0) {
@@ -784,17 +802,15 @@ function tickRoom(room) {
         p.frostNovaCooldown = Math.max(2000, 4500 - p.frostNovaLevel * 300);
         const radius = (120 + p.frostNovaLevel * 20) * am;
         const dmg = Math.round(p.damage * 0.6 * p.frostNovaLevel * am);
-        let hit = false;
         for (const e of room.enemies) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
             e.hp -= dmg;
             e.slowUntil = room.elapsed + 2.5;
             e.lastHitOwnerId = p.id;
             p.skillDamageDealt += dmg;
-            hit = true;
           }
         }
-        if (hit) io.to(room.id).emit('skillEffect', { type: 'frostnova', x: p.x, y: p.y, radius });
+        io.to(room.id).emit('skillEffect', { type: 'frostnova', x: p.x, y: p.y, radius });
       }
     }
     if (p.poisonLevel > 0) {
@@ -804,7 +820,6 @@ function tickRoom(room) {
         const radius = (60 + p.poisonLevel * 12) * am;
         const poisonDps = ((1.5 + p.poisonLevel * 1) + p.damage * (0.02 + p.poisonLevel * 0.015)) * am;
         const poisonDuration = POISON_CLOUD_DURATION_BASE + p.poisonLevel * 0.5;
-        let hit = false;
         // afflicts a lingering DoT on every enemy caught in the pulse (like axe bleed) rather
         // than a spatial hazard zone, since room.hazards is for damaging *players*, not enemies
         for (const e of room.enemies) {
@@ -812,10 +827,9 @@ function tickRoom(room) {
             e.poisonUntil = room.elapsed + poisonDuration;
             e.poisonDps = Math.max(e.poisonDps || 0, poisonDps);
             e.poisonOwnerId = p.id;
-            hit = true;
           }
         }
-        if (hit) io.to(room.id).emit('skillEffect', { type: 'poison', x: p.x, y: p.y, radius });
+        io.to(room.id).emit('skillEffect', { type: 'poison', x: p.x, y: p.y, radius });
       }
     }
     if (p.windLevel > 0) {
@@ -824,7 +838,6 @@ function tickRoom(room) {
         p.windCooldown = Math.max(3000, 6000 - p.windLevel * 500);
         const radius = (90 + p.windLevel * 15) * am;
         const dmg = Math.round(p.damage * (0.4 + p.windLevel * 0.15) * am);
-        let hit = false;
         for (const e of room.enemies) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
             e.hp -= dmg;
@@ -836,10 +849,9 @@ function tickRoom(room) {
             e.knockbackVY = (kdy / klen) * WIND_KNOCKBACK_SPEED;
             e.knockbackUntil = room.elapsed + KNOCKBACK_DURATION;
             e.knockbackTotalDuration = KNOCKBACK_DURATION;
-            hit = true;
           }
         }
-        if (hit) io.to(room.id).emit('skillEffect', { type: 'wind', x: p.x, y: p.y, radius });
+        io.to(room.id).emit('skillEffect', { type: 'wind', x: p.x, y: p.y, radius });
       }
     }
     if (p.runeLevel > 0) {
@@ -857,10 +869,10 @@ function tickRoom(room) {
             hit = true;
           }
         }
-        if (hit) {
-          p.hp = Math.min(p.maxHp, p.hp + Math.round(p.maxHp * (0.02 + p.runeLevel * 0.01)));
-          io.to(room.id).emit('skillEffect', { type: 'rune', x: p.x, y: p.y, radius });
-        }
+        // the self-heal is still tied to actually connecting (that's the reward for landing
+        // it), but the visual pulse always shows so the skill doesn't look inert on a miss
+        if (hit) p.hp = Math.min(p.maxHp, p.hp + Math.round(p.maxHp * (0.02 + p.runeLevel * 0.01)));
+        io.to(room.id).emit('skillEffect', { type: 'rune', x: p.x, y: p.y, radius });
       }
     }
     if (p.meteorLevel > 0) {
@@ -871,23 +883,27 @@ function tickRoom(room) {
         // a long-cooldown, high-impact nuke rather than another self-centered pulse
         const scanRange = 500;
         const nearby = room.enemies.filter((e) => distance(p.x, p.y, e.x, e.y) < scanRange);
+        const radius = (100 + p.meteorLevel * 15) * am;
+        // falls back to striking the player's own position (harmlessly, nothing dies) when
+        // nothing is in scan range, so the long cooldown still shows a visible cast on schedule
+        let strikeX = p.x, strikeY = p.y;
         if (nearby.length > 0) {
-          const radius = (100 + p.meteorLevel * 15) * am;
           let best = nearby[0], bestCount = -1;
           for (const candidate of nearby) {
             const count = nearby.filter((e) => distance(candidate.x, candidate.y, e.x, e.y) < radius).length;
             if (count > bestCount) { bestCount = count; best = candidate; }
           }
+          strikeX = best.x; strikeY = best.y;
           const dmg = Math.round(p.damage * (2 + p.meteorLevel * 0.8) * am);
           for (const e of room.enemies) {
-            if (distance(best.x, best.y, e.x, e.y) < radius) {
+            if (distance(strikeX, strikeY, e.x, e.y) < radius) {
               e.hp -= dmg;
               e.lastHitOwnerId = p.id;
               p.skillDamageDealt += dmg;
             }
           }
-          io.to(room.id).emit('skillEffect', { type: 'meteor', x: best.x, y: best.y, radius });
         }
+        io.to(room.id).emit('skillEffect', { type: 'meteor', x: strikeX, y: strikeY, radius });
       }
     }
     if (p.shockwaveLevel > 0) {
@@ -897,17 +913,15 @@ function tickRoom(room) {
         const radius = (85 + p.shockwaveLevel * 12) * am;
         const dmg = Math.round(p.damage * (0.35 + p.shockwaveLevel * 0.12) * am);
         const stunDuration = STUN_DURATION_BASE + p.shockwaveLevel * 0.15;
-        let hit = false;
         for (const e of room.enemies) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
             e.hp -= dmg;
             e.lastHitOwnerId = p.id;
             e.stunUntil = room.elapsed + stunDuration;
             p.skillDamageDealt += dmg;
-            hit = true;
           }
         }
-        if (hit) io.to(room.id).emit('skillEffect', { type: 'shockwave', x: p.x, y: p.y, radius });
+        io.to(room.id).emit('skillEffect', { type: 'shockwave', x: p.x, y: p.y, radius });
       }
     }
     if (p.gravityLevel > 0) {
@@ -916,7 +930,6 @@ function tickRoom(room) {
         p.gravityCooldown = Math.max(6000, 11000 - p.gravityLevel * 900);
         const radius = (180 + p.gravityLevel * 20) * am;
         const dmg = Math.round(p.damage * (1 + p.gravityLevel * 0.4) * am);
-        let hit = false;
         for (const e of room.enemies) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
             e.hp -= dmg;
@@ -927,10 +940,9 @@ function tickRoom(room) {
             e.pullTargetX = p.x;
             e.pullTargetY = p.y;
             e.pullUntil = room.elapsed + GRAVITY_PULL_DURATION;
-            hit = true;
           }
         }
-        if (hit) io.to(room.id).emit('skillEffect', { type: 'gravity', x: p.x, y: p.y, radius });
+        io.to(room.id).emit('skillEffect', { type: 'gravity', x: p.x, y: p.y, radius });
       }
     }
     if (p.brambleLevel > 0) {
@@ -953,16 +965,15 @@ function tickRoom(room) {
         p.hp = Math.max(1, p.hp - Math.round(p.maxHp * BLOOD_NOVA_HP_COST_FRACTION));
         const radius = (90 + p.bloodNovaLevel * 15) * am;
         const dmg = Math.round(p.damage * (1.8 + p.bloodNovaLevel * 0.6) * am);
-        let hit = false;
         for (const e of room.enemies) {
           if (distance(p.x, p.y, e.x, e.y) < radius) {
             e.hp -= dmg;
             e.lastHitOwnerId = p.id;
             p.skillDamageDealt += dmg;
-            hit = true;
           }
         }
-        if (hit) io.to(room.id).emit('skillEffect', { type: 'bloodnova', x: p.x, y: p.y, radius });
+        // always shows — the player already paid the HP cost, so they deserve to see it landed
+        io.to(room.id).emit('skillEffect', { type: 'bloodnova', x: p.x, y: p.y, radius });
       }
     }
   }
@@ -1302,10 +1313,10 @@ function tickRoom(room) {
     room.orbs.push({ id: room.nextOrbId++, x: xpBurstX / xpBurstCount, y: xpBurstY / xpBurstCount, value: xpBurstValue });
   }
 
-  // orb magnet pull + pickup
+  // orb magnet pull + pickup — deliberately NOT gated on p.pendingLevelUp, so XP keeps getting
+  // pulled in and collected while the upgrade-choice screen is up instead of freezing pickup
   for (const orb of room.orbs) {
     for (const p of alivePlayers) {
-      if (p.pendingLevelUp) continue;
       const d = distance(orb.x, orb.y, p.x, p.y);
       const pullRange = PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius;
       if (d < pullRange && d > 1) {
@@ -1316,35 +1327,47 @@ function tickRoom(room) {
     }
   }
   room.orbs = room.orbs.filter((orb) => {
+    // pick whoever is actually closest, not just the first player in iteration order — Map
+    // iteration order is join order, so "first in range wins" meant the room host (always
+    // first) claimed every orb whenever players were clustered together (e.g. everyone
+    // defending a treasure chest at the same spot), even when others were equally close
+    let closest = null, closestD = Infinity;
     for (const p of alivePlayers) {
-      if (p.pendingLevelUp) continue;
-      if (distance(orb.x, orb.y, p.x, p.y) < PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius) {
-        if (orb.relic) {
-          p.relicCount += 1;
-          io.to(p.id).emit('relicPickup', p.relicCount);
-          return false;
-        }
-        if (orb.gold) {
-          p.gold += orb.gold;
-          return false;
-        }
-        if (orb.power) {
-          if (orb.power === 'potion') p.hp = Math.min(p.maxHp, p.hp + POTION_HEAL);
-          else if (orb.power === 'speedboost') p.speedBoostUntil = room.elapsed + POWERUP_DURATION;
-          else if (orb.power === 'damageboost') p.damageBoostUntil = room.elapsed + POWERUP_DURATION;
-          io.to(p.id).emit('powerupPickup', orb.power);
-          return false;
-        }
-        p.xp += orb.value;
-        let needed = xpForLevel(p.level);
-        while (p.xp >= needed) {
-          p.xp -= needed;
-          p.level += 1;
-          p.pendingLevelUp = randomUpgrades();
-          needed = xpForLevel(p.level);
-        }
+      const d = distance(orb.x, orb.y, p.x, p.y);
+      if (d < PLAYER_RADIUS + XP_ORB_RADIUS + p.pickupRadius && d < closestD) {
+        closest = p; closestD = d;
+      }
+    }
+    if (closest) {
+      const p = closest;
+      if (orb.relic) {
+        p.relicCount += 1;
+        io.to(p.id).emit('relicPickup', p.relicCount);
         return false;
       }
+      if (orb.gold) {
+        p.gold += orb.gold;
+        return false;
+      }
+      if (orb.power) {
+        if (orb.power === 'potion') p.hp = Math.min(p.maxHp, p.hp + POTION_HEAL);
+        else if (orb.power === 'speedboost') p.speedBoostUntil = room.elapsed + POWERUP_DURATION;
+        else if (orb.power === 'damageboost') p.damageBoostUntil = room.elapsed + POWERUP_DURATION;
+        io.to(p.id).emit('powerupPickup', orb.power);
+        return false;
+      }
+      p.xp += orb.value;
+      let needed = xpForLevel(p.level);
+      while (p.xp >= needed) {
+        p.xp -= needed;
+        p.level += 1;
+        // if a choice screen is already up (or queued), queue this one instead of overwriting
+        // it — otherwise gaining 2+ levels from one big orb silently threw away a pick
+        if (p.pendingLevelUp) p.levelUpQueue.push(randomUpgrades());
+        else p.pendingLevelUp = randomUpgrades();
+        needed = xpForLevel(p.level);
+      }
+      return false;
     }
     return true;
   });
@@ -1373,6 +1396,12 @@ function serializeRoom(room) {
       shieldRemaining: Math.round(Math.max(0, p.invuln) * 10) / 10,
       fireAuraLevel: p.fireAuraLevel, frenzyStacks: p.frenzyStacks,
       areaSpecPicks: p.areaSpecPicks, shootingSpecPicks: p.shootingSpecPicks,
+      skillLevels: {
+        lightning: p.lightningLevel, fireaura: p.fireAuraLevel, frostnova: p.frostNovaLevel,
+        poison: p.poisonLevel, wind: p.windLevel, rune: p.runeLevel, meteor: p.meteorLevel,
+        shockwave: p.shockwaveLevel, gravity: p.gravityLevel, bramble: p.brambleLevel,
+        bloodnova: p.bloodNovaLevel,
+      },
       weaponDamageDealt: Math.round(p.weaponDamageDealt), skillDamageDealt: Math.round(p.skillDamageDealt), killsByType: p.killsByType,
     })),
     enemies: room.enemies.map((e) => ({
@@ -1525,7 +1554,9 @@ io.on('connection', (socket) => {
         io.to(p.id).emit('weaponEvolved');
       }
     }
-    p.pendingLevelUp = null;
+    // if another level-up queued up while this one was being decided, immediately bring up
+    // the next choice screen instead of dropping it
+    p.pendingLevelUp = p.levelUpQueue.length > 0 ? p.levelUpQueue.shift() : null;
   });
 
   socket.on('useSkill', () => {
