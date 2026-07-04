@@ -70,6 +70,8 @@ const POISON_POOL_DPS = 10;
 const POISON_CLOUD_DURATION_BASE = 3;
 const WIND_KNOCKBACK_SPEED = 300;
 const STUN_DURATION_BASE = 0.8;
+const LIGHTNING_FALLOFF = 0.75; // each bounce after the first deals this fraction of the previous one
+const LIGHTNING_MIN_FALLOFF = 0.3; // floor so far-out bounces still matter at high levels
 
 const UPGRADE_TRACKS = {
   damage: 'shooting', atkspeed: 'shooting', multishot: 'shooting', range: 'shooting',
@@ -774,11 +776,19 @@ function tickRoom(room) {
           fromX = best.x; fromY = best.y;
         }
         if (chain.length > 0) {
-          // per-bolt damage stays fixed at level up — only bounce count and cooldown scale with
-          // level — so total output grows linearly, not quadratically, as levels stack
-          const dmg = Math.round(p.damage * 0.5 * am);
-          for (const e of chain) { e.hp -= dmg; e.lastHitOwnerId = p.id; }
-          p.skillDamageDealt += dmg * chain.length;
+          // base per-bolt damage still stays fixed at level up — only bounce count and cooldown
+          // scale with level, so total output grows linearly not quadratically — but each bounce
+          // after the first now hits for less, like a real chain losing power as it jumps
+          const baseDmg = Math.round(p.damage * 0.5 * am);
+          let totalDealt = 0;
+          chain.forEach((e, i) => {
+            const falloff = Math.max(LIGHTNING_MIN_FALLOFF, Math.pow(LIGHTNING_FALLOFF, i));
+            const dmg = Math.round(baseDmg * falloff);
+            e.hp -= dmg;
+            e.lastHitOwnerId = p.id;
+            totalDealt += dmg;
+          });
+          p.skillDamageDealt += totalDealt;
         }
         // always shows a cast effect on cooldown, even with no targets in range — otherwise a
         // skill that's on cooldown but finds nothing to hit looks indistinguishable from broken

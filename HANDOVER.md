@@ -221,6 +221,12 @@ Fixed by finding the closest in-range player for each orb instead of the first m
 
 **Verification**: syntax-checked; live-tested with two real socket connections in the same room (not just one client scripted twice) to get genuine independent player state. Both accumulated XP and leveled up independently over the same test window (host: level 4, 31 kills; second player: level 2, 0 kills but real XP gained) — the second player gaining real XP with zero kills credited to them confirms orb pickup is now decoupled from the pre-existing `kills`-counter convention (which still credits `alivePlayers[0]` and was intentionally left alone, not in scope here) and correctly follows proximity. Didn't force an exact simultaneous-tie-break moment (hard to guarantee deterministically via scripted input), but the fix itself is a simple, unambiguous nearest-distance selection — low risk. Zero server/console errors across two live connections.
 
+## 5m. Lightning damage falloff per bounce (this session)
+
+User asked whether lightning's damage should decrease with each bounce instead of hitting equally hard every jump — yes, that's the standard chain-lightning design, so implemented: `LIGHTNING_FALLOFF = 0.75` (each bounce deals 75% of the previous bounce's damage), floored at `LIGHTNING_MIN_FALLOFF = 0.3` of the base hit so far-out bounces at high levels don't decay to near-nothing. Base per-bolt damage (before falloff) is unchanged — still fixed regardless of level, only bounce count/cooldown scale with level, preserving the linear-not-quadratic growth from §5b. Example curve at base damage 10: 10 → 8 → 6 → 4 → 3 → 3 (floor).
+
+**Verification**: syntax-checked; live-tested by force-picking lightning and confirming `skillLevels.lightning` incremented and `skillDamageDealt` grew from real chain hits, no crash. Didn't isolate per-bounce damage values individually in this pass (would need per-hit logging), but the formula is simple arithmetic applied to already-verified chain-targeting logic from §5j — low risk.
+
 ## 6. Next steps (not yet done — discussed but explicitly deferred or just not reached)
 
 Ideas that were pitched to the user and are still on the table if they want to keep going (roughly in order the user seemed most interested):
